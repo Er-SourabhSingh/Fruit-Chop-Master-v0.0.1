@@ -53,3 +53,48 @@ python main.py
 ```
 
 Without this flag, the game uses generated fruit-like sprites when image files are missing.
+
+## CI/CD (GitHub Actions)
+
+This repository now includes:
+
+- CI workflow: `.github/workflows/ci.yml`
+- CD workflow: `.github/workflows/cd.yml`
+
+### CI: automatic quality checks
+
+Runs on:
+
+- Push to `main` or `master`
+- Pull request targeting `main` or `master`
+- Manual trigger from GitHub Actions tab
+
+Checks performed:
+
+- Install dependencies
+- `ruff check .`
+- `python -m compileall -q .`
+- Headless Pygame smoke test
+- `pytest -q` (only when `tests/` exists)
+
+### CD: build and release executable
+
+Runs on:
+
+- Push of tags that start with `v` (example: `v1.0.0`)
+- Manual trigger from GitHub Actions tab
+
+What it does:
+
+- Builds Windows executable with PyInstaller
+- Uploads `dist/FruitChopMaster.exe` as workflow artifact
+- On tag builds, creates a GitHub Release and attaches the EXE
+
+### Release command flow
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+After pushing the tag, CD will build and publish the release automatically.
