@@ -54,6 +54,28 @@ python main.py
 
 Without this flag, the game uses generated fruit-like sprites when image files are missing.
 
+## Modes
+
+The game now includes two playable modes:
+
+- `Classic`: Original fruit-slicing mode with lives, bombs, and high score.
+- `AI vs Human`: Timed 60-second competitive round with separate Human and AI scores.
+
+### Start Menu Controls
+
+- `1`: Select Classic mode
+- `2`: Select AI vs Human mode
+- `Q / W / E`: Set AI difficulty to Easy / Medium / Hard (AI mode)
+- `Enter` or `Space`: Start selected mode
+
+### AI vs Human Highlights
+
+- Separate score tracking: Human vs AI
+- Top HUD shows Human score, AI score, timer, lives, and AI difficulty
+- AI blade trail uses a distinct visual style
+- AI behavior is balanced with reaction delay, misses, combos, and bomb mistakes
+- Match result screen shows winner, both scores, and high score
+
 ## CI/CD (GitHub Actions)
 
 This repository now includes:
