@@ -14,7 +14,6 @@
 
 * {
   box-sizing: border-box;
-  touch-action: none;
   user-select: none;
 }
 
@@ -40,6 +39,7 @@ body {
   height: 100%;
   display: block;
   background: transparent;
+  touch-action: none;
 }
 
 .hud {

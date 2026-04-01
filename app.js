@@ -18,6 +18,7 @@ const SETTINGS_DEFAULTS = {
 const GAME_CONFIG = {
   fps: 60,
   startingLives: 3,
+  aiModeLives: 1,
   maxLives: 5,
   skipsPerLifeLoss: 5,
   aiRoundSeconds: 60,
@@ -28,51 +29,111 @@ const GAME_CONFIG = {
 const AI_DIFFICULTY = {
   easy: {
     label: "Easy",
-    fruitHitChanceRange: [0.46, 0.57],
-    reactionDelayRange: [0.4, 0.68],
-    comboChanceRange: [0.1, 0.16],
-    bombAvoidance: 0.62,
-    tripleComboChance: 0.12,
-    primaryHitBoost: 0.04,
-    recoveryHitChance: 0.12,
+    fruitHitChanceRange: [0.48, 0.61],
+    reactionDelayRange: [0.32, 0.58],
+    comboChanceRange: [0.12, 0.2],
+    bombAvoidance: 0.68,
+    tripleComboChance: 0.15,
+    quadComboChance: 0.05,
+    quintComboChance: 0.01,
+    maxComboTargets: 3,
+    primaryHitBoost: 0.05,
+    recoveryHitChance: 0.14,
+    urgencyWeight: 3.2,
+    centerPenaltyWeight: 0.35,
+    riskyPenaltyWeight: 0.34,
+    progressPressureBoost: 0.06,
+    catchupAggression: 0.008,
+    catchupReactionScale: 0.016,
+    heartPriority: 2,
   },
   medium: {
     label: "Medium",
-    fruitHitChanceRange: [0.65, 0.74],
-    reactionDelayRange: [0.23, 0.4],
-    comboChanceRange: [0.22, 0.32],
-    bombAvoidance: 0.84,
-    tripleComboChance: 0.28,
-    primaryHitBoost: 0.06,
-    recoveryHitChance: 0.24,
+    fruitHitChanceRange: [0.8, 0.9],
+    reactionDelayRange: [0.07, 0.14],
+    comboChanceRange: [0.46, 0.66],
+    bombAvoidance: 0.94,
+    tripleComboChance: 0.62,
+    quadComboChance: 0.18,
+    quintComboChance: 0.05,
+    maxComboTargets: 3,
+    primaryHitBoost: 0.08,
+    recoveryHitChance: 0.35,
+    urgencyWeight: 4.25,
+    centerPenaltyWeight: 0.24,
+    riskyPenaltyWeight: 0.72,
+    progressPressureBoost: 0.12,
+    catchupAggression: 0.015,
+    catchupReactionScale: 0.032,
+    heartPriority: 1.65,
   },
   hard: {
     label: "Hard",
-    fruitHitChanceRange: [0.86, 0.95],
-    reactionDelayRange: [0.09, 0.18],
-    comboChanceRange: [0.4, 0.54],
-    bombAvoidance: 0.94,
-    tripleComboChance: 0.46,
+    fruitHitChanceRange: [0.9, 0.98],
+    reactionDelayRange: [0.02, 0.07],
+    comboChanceRange: [0.72, 0.9],
+    bombAvoidance: 0.985,
+    tripleComboChance: 0.84,
+    quadComboChance: 0.62,
+    quintComboChance: 0.34,
+    maxComboTargets: 5,
     primaryHitBoost: 0.12,
-    recoveryHitChance: 0.5,
+    recoveryHitChance: 0.62,
+    urgencyWeight: 5.05,
+    centerPenaltyWeight: 0.17,
+    riskyPenaltyWeight: 1.05,
+    progressPressureBoost: 0.16,
+    catchupAggression: 0.02,
+    catchupReactionScale: 0.055,
+    heartPriority: 1.3,
   },
 };
 
 const AI_MATCH_PACING = {
   easy: {
-    speedScale: 0.95,
-    spawnIntervalScale: 1.08,
-    waveDensity: 0.9,
+    speedScale: 0.98,
+    spawnIntervalScale: 1.03,
+    waveDensity: 0.95,
   },
   medium: {
-    speedScale: 1.05,
-    spawnIntervalScale: 0.94,
-    waveDensity: 1.08,
+    speedScale: 1.08,
+    spawnIntervalScale: 0.9,
+    waveDensity: 1.2,
   },
   hard: {
-    speedScale: 1.15,
-    spawnIntervalScale: 0.86,
-    waveDensity: 1.18,
+    speedScale: 1.18,
+    spawnIntervalScale: 0.82,
+    waveDensity: 1.35,
+  },
+};
+
+const AI_TIME_SCALING = [
+  { until: 15, speedMultiplier: 1, spawnIntervalMultiplier: 1 },
+  { until: 30, speedMultiplier: 1.2, spawnIntervalMultiplier: 0.88 },
+  { until: 45, speedMultiplier: 1.35, spawnIntervalMultiplier: 0.78 },
+  { until: GAME_CONFIG.aiRoundSeconds, speedMultiplier: 1.5, spawnIntervalMultiplier: 0.68 },
+];
+
+const AI_ADAPTIVE_TRACKING = {
+  windowSeconds: 6,
+  cleanupSlackSeconds: 2,
+  streakGraceSeconds: 0.9,
+  expectations: {
+    easy: {
+      cutRate: 1.05,
+      comboRate: 0.12,
+      scoreRate: 1.05,
+    },
+    medium: {
+      cutRate: 1.35,
+      comboRate: 0.2,
+      scoreRate: 1.35,
+    },
+    hard: {
+      cutRate: 1.55,
+      comboRate: 0.26,
+      scoreRate: 1.55,
+    },
   },
 };
 
@@ -557,11 +618,13 @@ class AIController {
     this.visibleSince = new Map();
     this.reactionDelayByObject = new Map();
     this.slashEffect = new AISlashEffect(12);
+    this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
   }
 
   setDifficulty(level) {
     this.difficultyLevel = AI_DIFFICULTY[level] ? level : "medium";
     this.profile = AI_DIFFICULTY[this.difficultyLevel];
+    this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
   }
 
   reset(now) {
@@ -569,7 +632,8 @@ class AIController {
     this.comboTimer = 0;
     this.statusText = "";
     this.statusTimer = 0;
-    this.nextActionAt = now + randomRange(...this.profile.reactionDelayRange);
+    this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
+    this.nextActionAt = now + this.actionDelay(0, 1, this.currentAdaptiveBoost);
     this.visibleSince.clear();
     this.reactionDelayByObject.clear();
     this.slashEffect.clear();
@@ -577,6 +641,10 @@ class AIController {
 
   get difficultyLabel() {
     return this.profile.label;
+  }
+
+  get adaptiveStageLabel() {
+    return `x${this.currentAdaptiveBoost.stageMultiplier || 1}`;
   }
 
   update(dt) {
@@ -589,7 +657,9 @@ class AIController {
     }
   }
 
-  decide(now, objects, bounds, roundProgress) {
+  decide(now, objects, bounds, roundProgress, scoreGap = 0, humanPerformance = null) {
+    this.currentAdaptiveBoost = this.buildAdaptiveBoost(roundProgress, scoreGap, humanPerformance);
+    this.pullActionForward(now, this.currentAdaptiveBoost);
     this.syncVisibility(now, objects, bounds);
     if (now < this.nextActionAt) {
       return null;
@@ -604,22 +674,54 @@ class AIController {
     const bombs = reactableObjects.filter((obj) => obj.kind === "bomb");
 
     if (!regularFruits.length && !hearts.length && !bombs.length) {
-      this.nextActionAt = now + Math.min(0.16, randomRange(...this.profile.reactionDelayRange) * 0.45);
+      this.nextActionAt =
+        now + Math.min(0.1, this.actionDelay(scoreGap, 0.5, this.currentAdaptiveBoost));
       return null;
     }
 
-    // Keep higher difficulties consistently stronger while still fair.
-    const pressure = roundProgress * 0.08;
-    const fruitHitChance = clamp(randomRange(...this.profile.fruitHitChanceRange) + pressure, 0.2, 0.985);
-    const comboChance = clamp(randomRange(...this.profile.comboChanceRange) + pressure * 0.55, 0.05, 0.9);
+    // Adaptive pressure: score catch-up, human momentum, and round intensity.
+    const pressure =
+      roundProgress * (this.profile.progressPressureBoost || 0.1) * this.currentAdaptiveBoost.targetingMultiplier;
+    const catchupPressure = clamp(
+      scoreGap * (this.profile.catchupAggression || 0.012),
+      -0.04,
+      0.14,
+    );
+    const fruitHitChance = clamp(
+      randomRange(...this.profile.fruitHitChanceRange) +
+        pressure +
+        catchupPressure +
+        this.currentAdaptiveBoost.hitChanceBoost,
+      0.2,
+      0.998,
+    );
+    const comboChance = clamp(
+      (randomRange(...this.profile.comboChanceRange) +
+        pressure * 0.72 +
+        Math.max(0, catchupPressure) * 0.6) *
+        this.currentAdaptiveBoost.comboChanceMultiplier,
+      0.05,
+      0.99,
+    );
 
-    const prioritizedFruits = this.prioritizeFruits(regularFruits, bombs, bounds);
+    const prioritizedFruits = this.prioritizeFruits(
+      regularFruits,
+      bombs,
+      bounds,
+      this.currentAdaptiveBoost.targetingMultiplier,
+    );
     const prioritizedHearts = this.prioritizeHearts(hearts, bounds);
-    const targets = this.pickTargets([...prioritizedFruits, ...prioritizedHearts], comboChance, bombs, bounds);
+    const targets = this.pickTargets(
+      [...prioritizedFruits, ...prioritizedHearts],
+      comboChance,
+      bombs,
+      bounds,
+      this.currentAdaptiveBoost,
+    );
     const slicedTargets = [];
     targets.forEach((target, index) => {
       const bonus = index === 0 ? this.profile.primaryHitBoost || 0 : 0;
-      const targetHitChance = clamp(fruitHitChance + bonus, 0.2, 0.99);
+      const targetHitChance = clamp(fruitHitChance + bonus, 0.2, 0.998);
       if (Math.random() < targetHitChance) {
         slicedTargets.push(target);
       }
@@ -635,14 +737,15 @@ class AIController {
     }
 
     let bombTarget = null;
-    if (bombs.length && this.shouldMakeBombMistake()) {
+    if (bombs.length && this.shouldMakeBombMistake(this.currentAdaptiveBoost)) {
       bombTarget = bombs[Math.floor(Math.random() * bombs.length)];
       this.spawnSlashTrail([bombTarget], false, true, bounds);
     }
 
-    this.nextActionAt = now + randomRange(...this.profile.reactionDelayRange);
+    this.nextActionAt = now + this.actionDelay(scoreGap, 1, this.currentAdaptiveBoost);
     if (!slicedTargets.length && !bombTarget) {
-      this.nextActionAt = now + Math.max(0.08, randomRange(...this.profile.reactionDelayRange) * 0.7);
+      this.nextActionAt =
+        now + Math.max(0.012, this.actionDelay(scoreGap, 0.55, this.currentAdaptiveBoost));
     }
 
     if (!slicedTargets.length && !bombTarget) {
@@ -650,6 +753,134 @@ class AIController {
     }
 
     return { slicedTargets, bombTarget };
+  }
+
+  defaultAdaptiveBoost() {
+    return {
+      stageMultiplier: 1,
+      reactionMultiplier: 1,
+      targetingMultiplier: 1,
+      comboChanceMultiplier: 1,
+      hitChanceBoost: 0,
+      hesitationScale: 1,
+      bombMistakeScale: 1,
+      comboTargetBonus: 0,
+    };
+  }
+
+  buildAdaptiveBoost(roundProgress, scoreGap, humanPerformance) {
+    const base = this.defaultAdaptiveBoost();
+    if (!humanPerformance) {
+      return base;
+    }
+
+    const difficultyScale =
+      this.difficultyLevel === "hard" ? 1.28 : this.difficultyLevel === "medium" ? 1.05 : 0.8;
+    const leadActive = humanPerformance.humanScore >= humanPerformance.aiScore;
+    const cutRateRatio = clamp(
+      humanPerformance.recentCutRate / Math.max(0.01, humanPerformance.expectedCutRate),
+      0,
+      8,
+    );
+    const comboRateRatio = clamp(
+      humanPerformance.recentComboRate / Math.max(0.01, humanPerformance.expectedComboRate),
+      0,
+      8,
+    );
+    const momentumRatio = clamp(
+      humanPerformance.scoreMomentum / Math.max(0.01, humanPerformance.expectedScoreMomentum),
+      0,
+      8,
+    );
+    const growthRatio = clamp(humanPerformance.cutGrowthRatio, 0, 8);
+    const scoreProgressRatio = clamp(humanPerformance.scoreProgressRatio, 0, 8);
+    const streakPressure = clamp(humanPerformance.cutStreak / 5, 0, 3);
+    const leadPressure = leadActive
+      ? this.difficultyLevel === "hard"
+        ? 2.15
+        : this.difficultyLevel === "medium"
+          ? 1.35
+          : 0.8
+      : 0;
+    const rawPressure =
+      cutRateRatio * 0.34 +
+      momentumRatio * 0.24 +
+      comboRateRatio * 0.15 +
+      growthRatio * 0.11 +
+      scoreProgressRatio * 0.08 +
+      streakPressure * 0.08 +
+      leadPressure +
+      Math.max(0, scoreGap) * 0.24 +
+      roundProgress * 0.2;
+    const pressure = rawPressure * difficultyScale;
+
+    let stageMultiplier = 1;
+    if (
+      pressure >= 6.2 ||
+      cutRateRatio >= 5.2 ||
+      momentumRatio >= 5.2 ||
+      growthRatio >= 4.8
+    ) {
+      stageMultiplier = 10;
+    } else if (
+      pressure >= 3.9 ||
+      cutRateRatio >= 3.4 ||
+      momentumRatio >= 3.4 ||
+      growthRatio >= 2.7
+    ) {
+      stageMultiplier = 4;
+    } else if (
+      pressure >= 1.8 ||
+      cutRateRatio >= 1.8 ||
+      momentumRatio >= 1.8 ||
+      leadActive
+    ) {
+      stageMultiplier = 2;
+    }
+
+    if (leadActive) {
+      stageMultiplier = Math.max(stageMultiplier, this.difficultyLevel === "hard" ? 4 : 2);
+    }
+
+    const overdrive = clamp((pressure - 1) * 0.08, 0, 0.9);
+    let reactionMultiplier = stageMultiplier * (1 + overdrive);
+    if (this.difficultyLevel === "hard") {
+      reactionMultiplier *= 1.15;
+    } else if (this.difficultyLevel === "medium") {
+      reactionMultiplier *= 1.04;
+    }
+    reactionMultiplier = clamp(reactionMultiplier, 1, 10);
+
+    return {
+      stageMultiplier,
+      reactionMultiplier,
+      targetingMultiplier: clamp(1 + (reactionMultiplier - 1) * 0.22, 1, 3.4),
+      comboChanceMultiplier: clamp(1 + (reactionMultiplier - 1) * 0.16, 1, 2.8),
+      hitChanceBoost: clamp((reactionMultiplier - 1) * 0.011 + Math.max(0, scoreGap) * 0.004, 0, 0.14),
+      hesitationScale: clamp(1 - (reactionMultiplier - 1) * 0.075, 0.22, 1),
+      bombMistakeScale: clamp(1 - (reactionMultiplier - 1) * 0.08, 0.2, 1),
+      comboTargetBonus:
+        stageMultiplier >= 10
+          ? this.difficultyLevel === "hard"
+            ? 2
+            : 1
+          : stageMultiplier >= 4
+            ? 1
+            : 0,
+    };
+  }
+
+  pullActionForward(now, adaptiveBoost) {
+    if (now >= this.nextActionAt) {
+      return;
+    }
+    const multiplier = clamp(adaptiveBoost.reactionMultiplier || 1, 1, 10);
+    if (multiplier <= 1) {
+      return;
+    }
+    const remaining = this.nextActionAt - now;
+    const acceleratedRemaining = remaining / multiplier;
+    this.nextActionAt = now + Math.max(0.004, acceleratedRemaining);
   }
 
   applyBombPenalty(penalty) {
@@ -718,17 +949,32 @@ class AIController {
       return false;
     }
     const delay = this.reactionDelayByObject.get(obj.id) ?? 0;
-    return now - this.visibleSince.get(obj.id) >= delay;
+    const reactionMultiplier = clamp(this.currentAdaptiveBoost.reactionMultiplier || 1, 1, 10);
+    const effectiveDelay = Math.max(0.004, delay / reactionMultiplier);
+    return now - this.visibleSince.get(obj.id) >= effectiveDelay;
   }
 
-  prioritizeFruits(fruits, bombs, bounds) {
+  actionDelay(scoreGap = 0, scale = 1, adaptiveBoost = this.currentAdaptiveBoost) {
+    const baseDelay = randomRange(...this.profile.reactionDelayRange);
+    const catchupScale =
+      scoreGap > 0
+        ? clamp(1 - scoreGap * (this.profile.catchupReactionScale || 0.02), 0.55, 1)
+        : 1;
+    const reactionMultiplier = clamp((adaptiveBoost && adaptiveBoost.reactionMultiplier) || 1, 1, 10);
+    const hesitationScale = clamp((adaptiveBoost && adaptiveBoost.hesitationScale) || 1, 0.2, 1);
+    return Math.max(0.004, (baseDelay * catchupScale * scale * hesitationScale) / reactionMultiplier);
+  }
+
+  prioritizeFruits(fruits, bombs, bounds, targetingMultiplier = 1) {
     if (!fruits.length) {
       return [];
     }
     const filtered = fruits.filter((fruit) => this.shouldAttemptFruit(fruit, bombs));
     const base = filtered.length ? filtered : fruits;
     return [...base].sort(
-      (a, b) => this.fruitPriorityScore(b, bombs, bounds) - this.fruitPriorityScore(a, bombs, bounds),
+      (a, b) =>
+        this.fruitPriorityScore(b, bombs, bounds, targetingMultiplier) -
+        this.fruitPriorityScore(a, bombs, bounds, targetingMultiplier),
     );
   }
 
@@ -739,14 +985,14 @@ class AIController {
     return [...hearts].sort((a, b) => this.objectUrgencyScore(b, bounds) - this.objectUrgencyScore(a, bounds));
   }
 
-  pickTargets(candidates, comboChance, bombs, bounds) {
+  pickTargets(candidates, comboChance, bombs, bounds, adaptiveBoost = this.currentAdaptiveBoost) {
     if (!candidates.length) {
       return [];
     }
     const sorted = [...candidates].sort(
       (a, b) =>
-        this.generalPriorityScore(b, bombs, bounds) -
-        this.generalPriorityScore(a, bombs, bounds),
+        this.generalPriorityScore(b, bombs, bounds, adaptiveBoost.targetingMultiplier || 1) -
+        this.generalPriorityScore(a, bombs, bounds, adaptiveBoost.targetingMultiplier || 1),
     );
     if (sorted.length === 1) {
       return [sorted[0]];
@@ -763,16 +1009,42 @@ class AIController {
       return da - db;
     });
 
+    const comboTargetBonus = Math.max(0, Math.floor(adaptiveBoost.comboTargetBonus || 0));
+    const maxComboTargets = Math.max(
+      2,
+      Math.floor(this.profile.maxComboTargets || 3) + comboTargetBonus,
+    );
     let targetCount = 2;
+    if ((adaptiveBoost.stageMultiplier || 1) >= 4 && nearby.length >= 3) {
+      targetCount = 3;
+    }
     if (nearby.length >= 3 && Math.random() < (this.profile.tripleComboChance || 0.3)) {
       targetCount = 3;
     }
+    if (
+      maxComboTargets >= 4 &&
+      nearby.length >= 4 &&
+      targetCount >= 3 &&
+      Math.random() < (this.profile.quadComboChance || 0.22)
+    ) {
+      targetCount = 4;
+    }
+    if (
+      maxComboTargets >= 5 &&
+      nearby.length >= 5 &&
+      targetCount >= 4 &&
+      Math.random() < (this.profile.quintComboChance || 0.1)
+    ) {
+      targetCount = 5;
+    }
+    targetCount = Math.min(targetCount, maxComboTargets, nearby.length);
     return nearby.slice(0, targetCount);
   }
 
-  shouldMakeBombMistake() {
-    const mistakeBase = clamp((1 - this.profile.bombAvoidance) * 0.45, 0.01, 0.25);
-    return Math.random() < mistakeBase;
+  shouldMakeBombMistake(adaptiveBoost = this.currentAdaptiveBoost) {
+    const mistakeBase = clamp((1 - this.profile.bombAvoidance) * 0.35, 0.002, 0.2);
+    const mistakeScale = clamp((adaptiveBoost && adaptiveBoost.bombMistakeScale) || 1, 0.2, 1);
+    return Math.random() < mistakeBase * mistakeScale;
   }
 
   shouldAttemptFruit(fruit, bombs) {
@@ -785,10 +1057,10 @@ class AIController {
     }
 
     if (this.difficultyLevel === "hard") {
-      return Math.random() < 0.06;
+      return Math.random() < 0.025;
     }
     if (this.difficultyLevel === "medium") {
-      return Math.random() < 0.16;
+      return Math.random() < 0.08;
     }
     return Math.random() < 0.48;
   }
@@ -806,7 +1078,9 @@ class AIController {
 
   objectUrgencyScore(obj, bounds) {
     const timeToExit = this.estimateTimeToBottomExit(obj, bounds);
-    return 1 / (0.14 + timeToExit);
+    const baseUrgency = 1 / (0.12 + timeToExit);
+    const descentBoost = obj.vy > 0 ? clamp(obj.vy / 900, 0, 1.15) * 0.55 : 0;
+    return baseUrgency + descentBoost;
   }
 
   estimateTimeToBottomExit(obj, bounds) {
@@ -817,20 +1091,22 @@ class AIController {
     return 1.7 + Math.abs(obj.vy) / 520;
   }
 
-  fruitPriorityScore(fruit, bombs, bounds) {
+  fruitPriorityScore(fruit, bombs, bounds, targetingMultiplier = 1) {
     const urgency = this.objectUrgencyScore(fruit, bounds);
     const centerX = (bounds.left + bounds.right) * 0.5;
     const centerPenalty = Math.abs(fruit.x - centerX) / Math.max(1, bounds.right - bounds.left);
-    const riskyPenalty = this.isRiskyNearBomb(fruit, bombs) ? 0.46 : 0;
-    return urgency * 3.4 - centerPenalty * 0.35 - riskyPenalty;
+    const urgencyWeight = (this.profile.urgencyWeight || 3.4) * clamp(targetingMultiplier, 1, 3.4);
+    const centerPenaltyWeight = this.profile.centerPenaltyWeight || 0.35;
+    const riskyPenalty = this.isRiskyNearBomb(fruit, bombs) ? this.profile.riskyPenaltyWeight || 0.46 : 0;
+    return urgency * urgencyWeight - centerPenalty * centerPenaltyWeight - riskyPenalty;
   }
 
-  generalPriorityScore(obj, bombs, bounds) {
+  generalPriorityScore(obj, bombs, bounds, targetingMultiplier = 1) {
     if (obj.kind === "fruit") {
-      return this.fruitPriorityScore(obj, bombs, bounds);
+      return this.fruitPriorityScore(obj, bombs, bounds, targetingMultiplier);
     }
     if (obj.kind === "heart") {
-      return this.objectUrgencyScore(obj, bounds) * 2.1;
+      return this.objectUrgencyScore(obj, bounds) * (this.profile.heartPriority || 2.1);
     }
     return this.objectUrgencyScore(obj, bounds) * 0.6;
   }
@@ -933,7 +1209,7 @@ class GameApp {
 
     this.humanScore = 0;
     this.aiScore = 0;
-    this.lives = GAME_CONFIG.startingLives;
+    this.lives = this.mode === MODES.AI_VS_HUMAN ? GAME_CONFIG.aiModeLives : GAME_CONFIG.startingLives;
     this.skippedFruits = 0;
     this.roundTimeRemaining = GAME_CONFIG.aiRoundSeconds;
     this.elapsedTime = 0;
@@ -944,8 +1220,14 @@ class GameApp {
 
     this.humanComboText = "";
     this.humanComboTimer = 0;
+    this.humanCutCount = 0;
+    this.humanComboCount = 0;
+    this.humanHitStreak = 0;
+    this.lastHumanHitAt = -Infinity;
+    this.humanPerformanceEvents = [];
 
     this.installPromptEvent = null;
+    this.resetHumanPerformanceTracking();
 
     this.bindEvents();
     this.applySettingsToUI();
@@ -959,13 +1241,14 @@ class GameApp {
     this.onPointerDown = this.onPointerDown.bind(this);
     this.onPointerMove = this.onPointerMove.bind(this);
     this.onPointerUp = this.onPointerUp.bind(this);
+    this.onWindowBlur = this.onWindowBlur.bind(this);
 
     window.addEventListener("resize", () => this.resizeCanvas());
     this.canvas.addEventListener("pointerdown", this.onPointerDown);
-    this.canvas.addEventListener("pointermove", this.onPointerMove);
-    this.canvas.addEventListener("pointerup", this.onPointerUp);
-    this.canvas.addEventListener("pointercancel", this.onPointerUp);
-    this.canvas.addEventListener("lostpointercapture", this.onPointerUp);
+    window.addEventListener("pointermove", this.onPointerMove);
+    window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("pointercancel", this.onPointerUp);
+    window.addEventListener("blur", this.onWindowBlur);
 
     this.startBtn.addEventListener("click", () => this.startGame());
     this.restartBtn.addEventListener("click", () => this.startGame());
@@ -1112,13 +1395,14 @@ class GameApp {
 
   onPointerDown(event) {
     const point = this.getPointFromEvent(event);
+    const isInside = this.isInsideBounds(point);
+    if (!isInside) {
+      return;
+    }
     this.pointer.x = point.x;
     this.pointer.y = point.y;
     this.pointer.pointerId = event.pointerId;
-    this.pointer.pressed = this.isInsideBounds(point);
-    if (this.pointer.pressed) {
-      this.canvas.setPointerCapture(event.pointerId);
-    }
+    this.pointer.pressed = true;
   }
 
   onPointerMove(event) {
@@ -1138,6 +1422,11 @@ class GameApp {
     this.pointer.pointerId = null;
   }
 
+  onWindowBlur() {
+    this.pointer.pressed = false;
+    this.pointer.pointerId = null;
+  }
+
   startGame() {
     const now = performance.now() / 1000;
     this.mode = this.settings.mode;
@@ -1147,7 +1436,7 @@ class GameApp {
 
     this.humanScore = 0;
     this.aiScore = 0;
-    this.lives = GAME_CONFIG.startingLives;
+    this.lives = this.mode === MODES.AI_VS_HUMAN ? GAME_CONFIG.aiModeLives : GAME_CONFIG.startingLives;
     this.skippedFruits = 0;
     this.roundTimeRemaining = GAME_CONFIG.aiRoundSeconds;
     this.elapsedTime = 0;
@@ -1159,6 +1448,7 @@ class GameApp {
     this.humanComboText = "";
     this.humanComboTimer = 0;
     this.blastTimer = 0;
+    this.resetHumanPerformanceTracking(now);
 
     this.objects = [];
     this.particles = [];
@@ -1176,6 +1466,7 @@ class GameApp {
     this.objects = [];
     this.particles = [];
     this.blade.reset();
+    this.resetHumanPerformanceTracking();
     this.pendingEndReason = "";
     this.menuOverlay.classList.remove("hidden");
     this.resultOverlay.classList.add("hidden");
@@ -1235,9 +1526,18 @@ class GameApp {
     this.updateSpawning(dt);
     this.updateObjects(dt);
     const humanClaims = this.collectHumanSliceClaims();
+    const humanPerformance =
+      this.mode === MODES.AI_VS_HUMAN ? this.buildHumanPerformanceSnapshot(now) : null;
     const aiDecision =
       this.state === "running" && this.mode === MODES.AI_VS_HUMAN
-        ? this.aiController.decide(now, this.objects, this.bounds, this.roundProgress())
+        ? this.aiController.decide(
+            now,
+            this.objects,
+            this.bounds,
+            this.roundProgress(),
+            this.humanScore - this.aiScore,
+            humanPerformance,
+          )
         : null;
     this.resolveSliceClaims(now, humanClaims, aiDecision);
 
@@ -1251,36 +1551,55 @@ class GameApp {
 
   updateDifficulty(dt) {
     this.elapsedTime += dt;
-    const progressScore =
-      this.mode === MODES.AI_VS_HUMAN ? (this.humanScore + this.aiScore) * 0.5 : this.humanScore;
-    const aiPacing =
-      this.mode === MODES.AI_VS_HUMAN
-        ? AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium
-        : null;
-
     let targetSpeed = 1;
     let targetInterval = GAME_CONFIG.baseSpawnInterval;
-    if (progressScore <= 20) {
-      targetSpeed = 1;
-      targetInterval = 0.9;
-    } else if (progressScore <= 50) {
-      const mid = (progressScore - 20) / 30;
-      targetSpeed = 1 + 0.28 * mid;
-      targetInterval = 0.9 - 0.13 * mid;
+
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      const elapsed = clamp(
+        GAME_CONFIG.aiRoundSeconds - this.roundTimeRemaining,
+        0,
+        GAME_CONFIG.aiRoundSeconds,
+      );
+      const timePacing = this.getAiTimePacing(elapsed);
+      const aiPacing = AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium;
+
+      targetSpeed = clamp(timePacing.speedMultiplier * aiPacing.speedScale, 0.88, 2.5);
+      targetInterval = clamp(
+        GAME_CONFIG.baseSpawnInterval *
+          timePacing.spawnIntervalMultiplier *
+          aiPacing.spawnIntervalScale,
+        0.2,
+        1.15,
+      );
     } else {
-      const high = progressScore - 50;
-      targetSpeed = clamp(1.28 + high * 0.008, 1.28, 1.85);
-      targetInterval = clamp(0.77 - high * 0.0025, 0.34, 0.77);
+      const progressScore = this.humanScore;
+      if (progressScore <= 20) {
+        targetSpeed = 1;
+        targetInterval = 0.9;
+      } else if (progressScore <= 50) {
+        const mid = (progressScore - 20) / 30;
+        targetSpeed = 1 + 0.28 * mid;
+        targetInterval = 0.9 - 0.13 * mid;
+      } else {
+        const high = progressScore - 50;
+        targetSpeed = clamp(1.28 + high * 0.008, 1.28, 1.85);
+        targetInterval = clamp(0.77 - high * 0.0025, 0.34, 0.77);
+      }
     }
 
-    if (aiPacing) {
-      targetSpeed = clamp(targetSpeed * aiPacing.speedScale, 0.85, 2.15);
-      targetInterval = clamp(targetInterval * aiPacing.spawnIntervalScale, 0.28, 1.1);
-    }
-
-    const smoothing = Math.min(1, dt * 4);
+    const smoothing = Math.min(1, dt * 5);
     this.speedMultiplier += (targetSpeed - this.speedMultiplier) * smoothing;
     this.spawnInterval += (targetInterval - this.spawnInterval) * smoothing;
+  }
+
+  getAiTimePacing(elapsedSeconds) {
+    const elapsed = clamp(elapsedSeconds, 0, GAME_CONFIG.aiRoundSeconds);
+    for (const stage of AI_TIME_SCALING) {
+      if (elapsed < stage.until) {
+        return stage;
+      }
+    }
+    return AI_TIME_SCALING[AI_TIME_SCALING.length - 1];
   }
 
   updateSpawning(dt) {
@@ -1294,20 +1613,44 @@ class GameApp {
   }
 
   spawnWave() {
-    const progressScore =
-      this.mode === MODES.AI_VS_HUMAN ? (this.humanScore + this.aiScore) * 0.5 : this.humanScore;
-    const difficulty = Math.min(1, progressScore / 85);
-    const aiPacing =
-      this.mode === MODES.AI_VS_HUMAN
-        ? AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium
-        : null;
-    let objectCount = 1;
-    let secondFruitChance = 0.45 + difficulty * 0.35;
-    let thirdFruitChance = 0.15 + difficulty * 0.3;
-    if (aiPacing) {
-      secondFruitChance = clamp(secondFruitChance * aiPacing.waveDensity, 0.1, 0.98);
-      thirdFruitChance = clamp(thirdFruitChance * (aiPacing.waveDensity + 0.04), 0.04, 0.88);
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      const progress = this.roundProgress();
+      const aiPacing = AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium;
+      const isHard = this.settings.aiDifficulty === "hard";
+      let objectCount = 1;
+
+      let secondFruitChance = 0.6 + progress * 0.28;
+      let thirdFruitChance = 0.28 + progress * 0.34;
+      let fourthFruitChance = 0.06 + progress * 0.24;
+
+      secondFruitChance = clamp(secondFruitChance * aiPacing.waveDensity, 0.25, 0.99);
+      thirdFruitChance = clamp(thirdFruitChance * (aiPacing.waveDensity + 0.08), 0.1, 0.97);
+      fourthFruitChance = clamp(fourthFruitChance * (aiPacing.waveDensity + 0.14), 0.03, 0.86);
+
+      if (Math.random() < secondFruitChance) {
+        objectCount += 1;
+      }
+      if (Math.random() < thirdFruitChance) {
+        objectCount += 1;
+      }
+      if (Math.random() < fourthFruitChance) {
+        objectCount += 1;
+      }
+      if (isHard && progress >= 0.75 && Math.random() < 0.28) {
+        objectCount += 1;
+      }
+
+      objectCount = Math.min(objectCount, isHard ? 5 : 4);
+      for (let i = 0; i < objectCount; i += 1) {
+        this.spawnObject();
+      }
+      return;
     }
+
+    const difficulty = Math.min(1, this.humanScore / 85);
+    let objectCount = 1;
+    const secondFruitChance = 0.45 + difficulty * 0.35;
+    const thirdFruitChance = 0.15 + difficulty * 0.3;
     if (Math.random() < secondFruitChance) {
       objectCount += 1;
     }
@@ -1329,9 +1672,20 @@ class GameApp {
       return;
     }
 
-    const progressScore =
-      this.mode === MODES.AI_VS_HUMAN ? (this.humanScore + this.aiScore) * 0.5 : this.humanScore;
-    const bombChance = Math.min(0.24, 0.1 + progressScore * 0.0018);
+    let bombChance = 0.1;
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      const progress = this.roundProgress();
+      const difficultyBombOffset =
+        this.settings.aiDifficulty === "hard"
+          ? 0.02
+          : this.settings.aiDifficulty === "medium"
+            ? 0.01
+            : 0;
+      bombChance = clamp(0.08 + progress * 0.12 + difficultyBombOffset, 0.08, 0.24);
+    } else {
+      const progressScore = this.humanScore;
+      bombChance = Math.min(0.24, 0.1 + progressScore * 0.0018);
+    }
     if (Math.random() < bombChance) {
       this.spawnBomb(baseX, baseY, launch);
       return;
@@ -1340,6 +1694,9 @@ class GameApp {
   }
 
   shouldSpawnHeart() {
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      return false;
+    }
     if (this.heartSpawnCooldown > 0) {
       return false;
     }
@@ -1483,6 +1840,10 @@ class GameApp {
   }
 
   collectHeart(heart) {
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      this.spawnJuiceSplash({ x: heart.x, y: heart.y }, heart.color);
+      return;
+    }
     this.lives = Math.min(GAME_CONFIG.maxLives, this.lives + 1);
     this.spawnJuiceSplash({ x: heart.x, y: heart.y }, heart.color);
   }
@@ -1601,6 +1962,7 @@ class GameApp {
 
     if (humanFruitHits > 0) {
       this.humanScore += humanFruitHits;
+      this.recordHumanPerformance(now, humanFruitHits);
       for (let i = 0; i < humanFruitHits; i += 1) {
         this.blade.registerSlice();
       }
@@ -1609,8 +1971,12 @@ class GameApp {
     if (aiFruitHits > 0) {
       this.aiScore += aiFruitHits;
       if (aiFruitHits > 1) {
-        const comboBonus = this.aiController.setComboFeedback(aiFruitHits);
-        this.aiScore += comboBonus;
+        if (this.mode === MODES.AI_VS_HUMAN) {
+          this.aiController.setSliceStatus(`AI Combo x${aiFruitHits}`, 0.72);
+        } else {
+          const comboBonus = this.aiController.setComboFeedback(aiFruitHits);
+          this.aiScore += comboBonus;
+        }
       } else {
         this.aiController.setSliceStatus("AI Slice", 0.55);
       }
@@ -1633,7 +1999,7 @@ class GameApp {
         continue;
       }
 
-      if (obj.kind === "fruit") {
+      if (obj.kind === "fruit" && this.mode !== MODES.AI_VS_HUMAN) {
         this.skippedFruits += 1;
         if (this.skippedFruits >= GAME_CONFIG.skipsPerLifeLoss) {
           this.skippedFruits = 0;
@@ -1651,6 +2017,11 @@ class GameApp {
   handleHumanComboBonus() {
     const hits = this.blade.consumeComboHits();
     if (hits <= 1) {
+      return;
+    }
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      this.humanComboText = `Combo x${hits}`;
+      this.humanComboTimer = 0.85;
       return;
     }
     const bonus = comboBonusForHits(hits);
@@ -1733,6 +2104,99 @@ class GameApp {
     return clamp(elapsed / GAME_CONFIG.aiRoundSeconds, 0, 1);
   }
 
+  resetHumanPerformanceTracking(now = 0) {
+    this.humanCutCount = 0;
+    this.humanComboCount = 0;
+    this.humanHitStreak = 0;
+    this.lastHumanHitAt = now - 1000;
+    this.humanPerformanceEvents = [];
+  }
+
+  trimHumanPerformanceEvents(now) {
+    const oldestAllowed =
+      now - (AI_ADAPTIVE_TRACKING.windowSeconds + AI_ADAPTIVE_TRACKING.cleanupSlackSeconds);
+    this.humanPerformanceEvents = this.humanPerformanceEvents.filter((entry) => entry.time >= oldestAllowed);
+  }
+
+  recordHumanPerformance(now, hitCount) {
+    const hits = Math.max(0, Math.floor(hitCount));
+    if (hits <= 0) {
+      return;
+    }
+
+    const streakGrace = AI_ADAPTIVE_TRACKING.streakGraceSeconds;
+    if (now - this.lastHumanHitAt <= streakGrace) {
+      this.humanHitStreak += hits;
+    } else {
+      this.humanHitStreak = hits;
+    }
+    this.lastHumanHitAt = now;
+    this.humanCutCount += hits;
+    if (hits >= 2) {
+      this.humanComboCount += 1;
+    }
+
+    this.humanPerformanceEvents.push({
+      time: now,
+      cuts: hits,
+      score: hits,
+      comboEvents: hits >= 2 ? 1 : 0,
+    });
+    this.trimHumanPerformanceEvents(now);
+  }
+
+  buildHumanPerformanceSnapshot(now) {
+    this.trimHumanPerformanceEvents(now);
+    if (now - this.lastHumanHitAt > AI_ADAPTIVE_TRACKING.streakGraceSeconds) {
+      this.humanHitStreak = 0;
+    }
+
+    const difficultyKey = AI_ADAPTIVE_TRACKING.expectations[this.settings.aiDifficulty]
+      ? this.settings.aiDifficulty
+      : "medium";
+    const expected = AI_ADAPTIVE_TRACKING.expectations[difficultyKey];
+    const sampleWindow = AI_ADAPTIVE_TRACKING.windowSeconds;
+    const cutoff = now - sampleWindow;
+    let recentCuts = 0;
+    let recentScore = 0;
+    let recentComboEvents = 0;
+    this.humanPerformanceEvents.forEach((entry) => {
+      if (entry.time < cutoff) {
+        return;
+      }
+      recentCuts += entry.cuts;
+      recentScore += entry.score;
+      recentComboEvents += entry.comboEvents;
+    });
+
+    const effectiveWindow = Math.max(1, Math.min(sampleWindow, this.elapsedTime || sampleWindow));
+    const recentCutRate = recentCuts / effectiveWindow;
+    const scoreMomentum = recentScore / effectiveWindow;
+    const recentComboRate = recentComboEvents / effectiveWindow;
+    const elapsedRoundSeconds = clamp(
+      GAME_CONFIG.aiRoundSeconds - this.roundTimeRemaining,
+      0,
+      GAME_CONFIG.aiRoundSeconds,
+    );
+    const expectedCutsByNow = Math.max(1, elapsedRoundSeconds * expected.cutRate);
+    const expectedScoreByNow = Math.max(1, elapsedRoundSeconds * expected.scoreRate);
+
+    return {
+      humanScore: this.humanScore,
+      aiScore: this.aiScore,
+      cutCount: this.humanCutCount,
+      recentCutRate,
+      recentComboRate,
+      scoreMomentum,
+      cutStreak: this.humanHitStreak,
+      cutGrowthRatio: this.humanCutCount / expectedCutsByNow,
+      scoreProgressRatio: this.humanScore / expectedScoreByNow,
+      expectedCutRate: expected.cutRate,
+      expectedComboRate: expected.comboRate,
+      expectedScoreMomentum: expected.scoreRate,
+    };
+  }
+
   spawnJuiceSplash(position, color) {
     const count = Math.floor(randomRange(13, 21));
     for (let i = 0; i < count; i += 1) {
@@ -1810,21 +2274,42 @@ class GameApp {
   }
 
   drawBomb(bomb) {
-    const pulse = 0.65 + 0.35 * (0.5 + 0.5 * Math.sin(bomb.pulse));
-    this.ctx.fillStyle = "#1f1f1f";
+    const pulse = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(bomb.pulse * 1.4));
+    const fuseBaseX = bomb.x + bomb.radius * 0.34;
+    const fuseBaseY = bomb.y - bomb.radius * 0.86;
+    const sparkX = fuseBaseX + bomb.radius * 0.38;
+    const sparkY = fuseBaseY - bomb.radius * 0.8;
+
+    this.ctx.fillStyle = "#20242a";
     this.ctx.beginPath();
-    this.ctx.arc(bomb.x, bomb.y, bomb.radius, 0, Math.PI * 2);
+    this.ctx.ellipse(bomb.x, bomb.y, bomb.radius * 0.98, bomb.radius * 0.94, 0, 0, Math.PI * 2);
     this.ctx.fill();
-    this.ctx.strokeStyle = "#f4f4f4";
-    this.ctx.lineWidth = 2;
+
+    this.ctx.fillStyle = "#161a20";
     this.ctx.beginPath();
-    this.ctx.arc(bomb.x, bomb.y, bomb.radius + 3, 0, Math.PI * 2);
-    this.ctx.stroke();
-    this.ctx.strokeStyle = "#d03d3d";
-    this.ctx.lineWidth = 3;
+    this.ctx.ellipse(
+      bomb.x - bomb.radius * 0.14,
+      bomb.y + bomb.radius * 0.08,
+      bomb.radius * 0.56,
+      bomb.radius * 0.5,
+      0,
+      0,
+      Math.PI * 2,
+    );
+    this.ctx.fill();
+
+    this.ctx.strokeStyle = "#69717c";
+    this.ctx.lineWidth = Math.max(2, bomb.radius * 0.1);
+    this.ctx.lineCap = "round";
     this.ctx.beginPath();
-    this.ctx.arc(bomb.x, bomb.y, bomb.radius + 8 + pulse * 4, 0, Math.PI * 2);
+    this.ctx.moveTo(fuseBaseX, fuseBaseY);
+    this.ctx.lineTo(sparkX, sparkY);
     this.ctx.stroke();
+
+    this.ctx.fillStyle = `rgba(255, 146, 80, ${0.55 + pulse * 0.35})`;
+    this.ctx.beginPath();
+    this.ctx.arc(sparkX, sparkY, bomb.radius * (0.11 + pulse * 0.07), 0, Math.PI * 2);
+    this.ctx.fill();
   }
 
   drawHeart(heart) {
@@ -1938,9 +2423,14 @@ class GameApp {
     this.hudAiScore.textContent = this.mode === MODES.AI_VS_HUMAN ? String(this.aiScore) : "-";
     this.hudMode.textContent = this.mode === MODES.AI_VS_HUMAN ? "Mode: AI vs Human" : "Mode: Classic";
     this.hudTimer.textContent = this.mode === MODES.AI_VS_HUMAN ? formatTime(this.roundTimeRemaining) : "--:--";
-    this.hudLives.textContent = `Lives: ${"❤ ".repeat(Math.max(0, this.lives)).trim() || "0"}`;
-    this.hudDifficulty.textContent =
-      this.mode === MODES.AI_VS_HUMAN ? `AI Difficulty: ${this.aiController.difficultyLabel}` : "";
+    this.hudLives.textContent = `Lives: ${this.lives}`;
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      const boostLabel = this.aiController.adaptiveStageLabel;
+      const boostText = boostLabel !== "x1" ? ` | Boost ${boostLabel}` : "";
+      this.hudDifficulty.textContent = `AI Difficulty: ${this.aiController.difficultyLabel}${boostText}`;
+    } else {
+      this.hudDifficulty.textContent = "";
+    }
     this.hudHighScore.textContent = `Best: ${this.highScore}`;
   }
 }
