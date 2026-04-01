@@ -38,18 +38,18 @@ class DifficultyManager:
         "medium": AIDifficultyProfile(
             key="medium",
             label="Medium",
-            fruit_hit_chance_range=(0.60, 0.70),
-            reaction_delay_range=(0.25, 0.45),
-            combo_chance_range=(0.20, 0.30),
-            bomb_avoidance=0.80,
+            fruit_hit_chance_range=(0.80, 0.90),
+            reaction_delay_range=(0.10, 0.20),
+            combo_chance_range=(0.38, 0.52),
+            bomb_avoidance=0.92,
         ),
         "hard": AIDifficultyProfile(
             key="hard",
             label="Hard",
-            fruit_hit_chance_range=(0.75, 0.85),
-            reaction_delay_range=(0.12, 0.25),
-            combo_chance_range=(0.35, 0.45),
-            bomb_avoidance=0.92,
+            fruit_hit_chance_range=(0.88, 0.95),
+            reaction_delay_range=(0.07, 0.14),
+            combo_chance_range=(0.58, 0.74),
+            bomb_avoidance=0.97,
         ),
     }
 

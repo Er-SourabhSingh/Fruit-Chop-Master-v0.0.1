@@ -13,7 +13,6 @@ from ai_player import AIPlayer
 from asset_loader import AssetLoader
 from blade import Blade
 from bomb import Bomb
-from difficulty_manager import DifficultyManager
 from fruit import FRUIT_TYPES, Fruit
 from heart_pickup import HeartPickup
 from human_player import HumanPlayer
@@ -31,7 +30,16 @@ MODE_CLASSIC = "classic"
 MODE_AI_VS_HUMAN = "ai_vs_human"
 
 AI_VS_HUMAN_ROUND_SECONDS = 60.0
+AI_MODE_DIFFICULTY = "hard"
 AI_BOMB_PENALTY = 2
+AI_SPEED_STAGES = (
+    (15.0, 1.0, 0.90),
+    (30.0, 1.2, 0.78),
+    (45.0, 1.35, 0.68),
+    (AI_VS_HUMAN_ROUND_SECONDS, 1.5, 0.58),
+)
+
+AI_PERFORMANCE_WINDOW_SECONDS = 6.0
 
 
 @dataclass
@@ -70,13 +78,12 @@ class GameManager:
 
         self.selected_mode = MODE_CLASSIC
         self.active_mode = MODE_CLASSIC
-        self.selected_ai_difficulty = DifficultyManager.DEFAULT_LEVEL
         self.round_time_remaining = AI_VS_HUMAN_ROUND_SECONDS
         self.elapsed_time = 0.0
 
         self.blade = Blade()
         self.human_player = HumanPlayer(score=0, lives=STARTING_LIVES)
-        self.ai_player = AIPlayer(difficulty_level=self.selected_ai_difficulty)
+        self.ai_player = AIPlayer(difficulty_level=AI_MODE_DIFFICULTY)
         self.result_screen = ResultScreen()
         self.result_model: Optional[ResultScreenModel] = None
         self._active_touch_id: Optional[int] = None
@@ -99,11 +106,15 @@ class GameManager:
         self.high_score = self._load_high_score()
         self.new_high_score_achieved = False
 
+        self.human_cut_count = 0
+        self.human_slice_events: list[float] = []
+        self.human_combo_events: list[float] = []
+        self.human_score_timeline: list[tuple[float, int]] = [(0.0, 0)]
+
         self.menu_mode_rects: dict[str, pygame.Rect] = {
             MODE_CLASSIC: pygame.Rect(0, 0, 0, 0),
             MODE_AI_VS_HUMAN: pygame.Rect(0, 0, 0, 0),
         }
-        self.menu_difficulty_rects: dict[str, pygame.Rect] = {}
         self.menu_start_rect = pygame.Rect(0, 0, 0, 0)
         self._update_menu_layout()
 
@@ -147,16 +158,6 @@ class GameManager:
                 self.selected_mode = MODE_AI_VS_HUMAN
             elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
                 self.selected_mode = MODE_AI_VS_HUMAN if self.selected_mode == MODE_CLASSIC else MODE_CLASSIC
-            elif self.selected_mode == MODE_AI_VS_HUMAN and event.key in (pygame.K_UP, pygame.K_DOWN):
-                step = -1 if event.key == pygame.K_UP else 1
-                self.selected_ai_difficulty = DifficultyManager.cycle_level(self.selected_ai_difficulty, step)
-            elif self.selected_mode == MODE_AI_VS_HUMAN and event.key in (pygame.K_q, pygame.K_w, pygame.K_e):
-                if event.key == pygame.K_q:
-                    self.selected_ai_difficulty = "easy"
-                elif event.key == pygame.K_w:
-                    self.selected_ai_difficulty = "medium"
-                else:
-                    self.selected_ai_difficulty = "hard"
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                 self.start_game()
             return
@@ -176,12 +177,6 @@ class GameManager:
             if self.menu_mode_rects[MODE_AI_VS_HUMAN].collidepoint(click_pos):
                 self.selected_mode = MODE_AI_VS_HUMAN
                 return
-
-            for level, rect in self.menu_difficulty_rects.items():
-                if rect.collidepoint(click_pos):
-                    self.selected_mode = MODE_AI_VS_HUMAN
-                    self.selected_ai_difficulty = level
-                    return
 
             if self.menu_start_rect.collidepoint(click_pos):
                 self.start_game()
@@ -216,7 +211,8 @@ class GameManager:
         self.pending_game_over_reason = ""
         self.game_over_reason = ""
 
-        self.human_player.reset(starting_lives=STARTING_LIVES)
+        starting_lives = 1 if self.active_mode == MODE_AI_VS_HUMAN else STARTING_LIVES
+        self.human_player.reset(starting_lives=starting_lives)
         self.elapsed_time = 0.0
         self.spawn_cooldown = 0.35
         self.heart_spawn_cooldown = random.uniform(4.5, 7.0)
@@ -227,9 +223,13 @@ class GameManager:
         self.objects.clear()
         self.particles.clear()
         self.blade.reset()
+        self.human_cut_count = 0
+        self.human_slice_events.clear()
+        self.human_combo_events.clear()
+        self.human_score_timeline = [(0.0, 0)]
 
         now = pygame.time.get_ticks() / 1000.0
-        self.ai_player.set_difficulty(self.selected_ai_difficulty)
+        self.ai_player.set_difficulty(AI_MODE_DIFFICULTY)
         self.ai_player.reset(now=now)
         self.round_time_remaining = AI_VS_HUMAN_ROUND_SECONDS
 
@@ -326,22 +326,31 @@ class GameManager:
 
     def _update_difficulty(self, dt: float) -> None:
         self.elapsed_time += dt
-        progress_score = self._difficulty_progress_score()
-
-        if progress_score <= 20:
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            elapsed = self._round_elapsed_seconds()
             target_speed = 1.0
             target_interval = 0.9
-        elif progress_score <= 50:
-            mid_progress = (progress_score - 20) / 30.0
-            target_speed = 1.0 + (0.28 * mid_progress)
-            target_interval = 0.9 - (0.13 * mid_progress)
+            for until_seconds, stage_speed, stage_interval in AI_SPEED_STAGES:
+                if elapsed < until_seconds:
+                    target_speed = stage_speed
+                    target_interval = stage_interval
+                    break
         else:
-            high_progress = progress_score - 50
-            target_speed = min(1.85, 1.28 + (high_progress * 0.008))
-            target_interval = max(0.34, 0.77 - (high_progress * 0.0025))
+            progress_score = self._difficulty_progress_score()
+            if progress_score <= 20:
+                target_speed = 1.0
+                target_interval = 0.9
+            elif progress_score <= 50:
+                mid_progress = (progress_score - 20) / 30.0
+                target_speed = 1.0 + (0.28 * mid_progress)
+                target_interval = 0.9 - (0.13 * mid_progress)
+            else:
+                high_progress = progress_score - 50
+                target_speed = min(1.85, 1.28 + (high_progress * 0.008))
+                target_interval = max(0.34, 0.77 - (high_progress * 0.0025))
 
-        # Smooth interpolation avoids abrupt speed jumps at score thresholds.
-        smoothing = min(1.0, dt * 4.0)
+        # Smooth interpolation avoids abrupt speed jumps at stage boundaries.
+        smoothing = min(1.0, dt * 5.0)
         self.speed_multiplier += (target_speed - self.speed_multiplier) * smoothing
         self.spawn_interval += (target_interval - self.spawn_interval) * smoothing
 
@@ -356,6 +365,38 @@ class GameManager:
         self.spawn_cooldown = self.spawn_interval * interval_variation
 
     def _spawn_wave(self) -> None:
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            elapsed = self._round_elapsed_seconds()
+            object_count = 2
+            if elapsed < 15.0:
+                third_chance = 0.55
+                fourth_chance = 0.18
+                fifth_chance = 0.02
+            elif elapsed < 30.0:
+                third_chance = 0.68
+                fourth_chance = 0.30
+                fifth_chance = 0.08
+            elif elapsed < 45.0:
+                third_chance = 0.80
+                fourth_chance = 0.44
+                fifth_chance = 0.16
+            else:
+                third_chance = 0.90
+                fourth_chance = 0.58
+                fifth_chance = 0.28
+
+            if random.random() < third_chance:
+                object_count += 1
+            if random.random() < fourth_chance:
+                object_count += 1
+            if random.random() < fifth_chance:
+                object_count += 1
+
+            object_count = min(5, object_count)
+            for _ in range(object_count):
+                self._spawn_object()
+            return
+
         progress_score = self._difficulty_progress_score()
         difficulty = min(1.0, progress_score / 85.0)
         object_count = 1
@@ -377,8 +418,11 @@ class GameManager:
             self._spawn_heart(position=(x_pos, y_pos), velocity=(vx, vy), gravity=gravity, scale=scale)
             return
 
-        progress_score = self._difficulty_progress_score()
-        bomb_chance = min(0.24, 0.10 + (progress_score * 0.0018))
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            bomb_chance = min(0.26, 0.09 + (self._round_progress() * 0.15))
+        else:
+            progress_score = self._difficulty_progress_score()
+            bomb_chance = min(0.24, 0.10 + (progress_score * 0.0018))
         if random.random() < bomb_chance:
             self._spawn_bomb(position=(x_pos, y_pos), velocity=(vx, vy), gravity=gravity, scale=scale)
             return
@@ -408,6 +452,9 @@ class GameManager:
         return vx, vy, gravity, scale
 
     def _should_spawn_heart(self) -> bool:
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            return False
+
         if self.heart_spawn_cooldown > 0.0:
             return False
 
@@ -496,12 +543,18 @@ class GameManager:
         self.objects = survivors
 
     def _handle_ai_turn(self, now: float) -> None:
+        recent_cut_rate, combo_frequency, score_momentum = self._build_human_performance_snapshot()
         decision = self.ai_player.decide_action(
             now=now,
             objects=self.objects,
             arena_width=self.width,
             arena_height=self.height,
             round_progress=self._round_progress(),
+            human_score=self.human_player.score,
+            human_cut_count=self.human_cut_count,
+            human_recent_cut_rate=recent_cut_rate,
+            human_combo_frequency=combo_frequency,
+            human_score_momentum=score_momentum,
         )
         if decision is None:
             return
@@ -534,7 +587,7 @@ class GameManager:
         remaining: list[Fruit] = []
         for obj in self.objects:
             if obj.off_screen(self.height):
-                if self._is_regular_fruit(obj):
+                if self.active_mode != MODE_AI_VS_HUMAN and self._is_regular_fruit(obj):
                     self._apply_missed_fruit_penalty()
                     if self.state != "running":
                         return
@@ -547,13 +600,14 @@ class GameManager:
     def _slice_fruit(self, fruit: Fruit) -> None:
         fruit.slice()
         self.human_player.score += 1
+        self._record_human_slice_event()
         self.blade.register_slice()
         self._spawn_juice_splash(fruit.position, fruit.color)
         self._play_sound("slice")
 
     def _collect_heart(self, heart: HeartPickup) -> None:
         heart.slice()
-        if self.human_player.lives < MAX_LIVES:
+        if self.active_mode != MODE_AI_VS_HUMAN and self.human_player.lives < MAX_LIVES:
             self.human_player.lives += 1
 
         self._spawn_juice_splash(heart.position, heart.color)
@@ -564,19 +618,22 @@ class GameManager:
         self._trigger_bomb_blast(bomb.position, reason="human_bomb")
 
     def _apply_missed_fruit_penalty(self) -> None:
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            return
+
         life_loss_triggered = self.human_player.register_missed_fruit(SKIPS_PER_LIFE_LOSS)
         if life_loss_triggered:
             self._apply_life_loss()
 
     def _apply_life_loss(self) -> None:
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            return
+
         out_of_lives = self.human_player.lose_life()
         if not out_of_lives:
             return
 
-        if self.active_mode == MODE_AI_VS_HUMAN:
-            self._trigger_game_over("human_out_of_lives")
-        else:
-            self._trigger_game_over("classic_lives_depleted")
+        self._trigger_game_over("classic_lives_depleted")
 
     @staticmethod
     def _is_regular_fruit(obj: Fruit) -> bool:
@@ -599,9 +656,6 @@ class GameManager:
             if reason == "human_bomb":
                 outcome_text = "AI Wins! Bomb Hit"
                 winner = "ai"
-            elif reason == "human_out_of_lives":
-                outcome_text = "AI Wins! Out Of Lives"
-                winner = "ai"
             elif self.human_player.score > self.ai_player.score:
                 outcome_text = "You Win!"
                 winner = "human"
@@ -613,7 +667,7 @@ class GameManager:
                 winner = "draw"
 
             return ResultScreenModel(
-                mode_label=f"Mode: AI vs Human ({self.ai_player.difficulty_label})",
+                mode_label="Mode: AI",
                 title="Match Over",
                 outcome_text=outcome_text,
                 winner=winner,
@@ -690,8 +744,16 @@ class GameManager:
         if sliced_in_swipe <= 1:
             return
 
+        self._record_human_combo_event()
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            self.human_player.combo_text = f"Combo x{sliced_in_swipe}"
+            self.human_player.combo_timer = 0.9
+            self._play_sound("combo")
+            return
+
         bonus = ScoreManager.combo_bonus_for_hits(sliced_in_swipe)
         self.human_player.score += bonus
+        self._record_human_score_event()
         self.human_player.combo_text = ScoreManager.human_combo_text(sliced_in_swipe, bonus)
         self.human_player.combo_timer = 1.0
         self._play_sound("combo")
@@ -829,19 +891,9 @@ class GameManager:
         timer_rect = timer_surface.get_rect(midtop=(self.width // 2, top_y - 1))
         self.screen.blit(timer_surface, timer_rect)
 
-        mode_surface = self.body_font.render("Mode: AI vs Human", True, (220, 232, 252))
+        mode_surface = self.body_font.render("Mode: AI", True, (220, 232, 252))
         mode_rect = mode_surface.get_rect(midtop=(self.width // 2, timer_rect.bottom - 2))
         self.screen.blit(mode_surface, mode_rect)
-
-        hearts = " ".join("\u2764" for _ in range(max(0, self.human_player.lives)))
-        if not hearts:
-            hearts = "0"
-        lives_surface = self.body_font.render(f"Lives: {hearts}", True, (255, 106, 106))
-        self.screen.blit(lives_surface, (padding_x, human_surface.get_rect().height + top_y + 2))
-
-        difficulty_surface = self.body_font.render(f"AI: {self.ai_player.difficulty_label}", True, (170, 212, 255))
-        difficulty_rect = difficulty_surface.get_rect(topright=(self.width - padding_x, ai_rect.bottom + 2))
-        self.screen.blit(difficulty_surface, difficulty_rect)
 
     def _draw_bomb_blast_effect(self) -> None:
         if self.blast_timer <= 0.0:
@@ -923,21 +975,11 @@ class GameManager:
         )
         self._draw_mode_card(
             self.menu_mode_rects[MODE_AI_VS_HUMAN],
-            title="AI vs Human",
+            title="AI",
             subtitle="60s competitive duel",
             selected=self.selected_mode == MODE_AI_VS_HUMAN,
             accent=(120, 185, 255),
         )
-
-        chips_title = self.body_font.render("AI Difficulty", True, (210, 226, 248))
-        chips_title_rect = chips_title.get_rect(center=(self.width // 2, self.menu_mode_rects[MODE_AI_VS_HUMAN].bottom + 20))
-        self.screen.blit(chips_title, chips_title_rect)
-
-        for level in DifficultyManager.LEVEL_ORDER:
-            rect = self.menu_difficulty_rects[level]
-            selected = self.selected_ai_difficulty == level
-            enabled = self.selected_mode == MODE_AI_VS_HUMAN
-            self._draw_difficulty_chip(rect, level.title(), selected=selected, enabled=enabled)
 
         button_color = (58, 170, 95) if self.selected_mode == MODE_CLASSIC else (64, 142, 224)
         pygame.draw.rect(self.screen, button_color, self.menu_start_rect, border_radius=12)
@@ -946,7 +988,7 @@ class GameManager:
         self.screen.blit(start_label, start_label.get_rect(center=self.menu_start_rect.center))
 
         hint_line = self.body_font.render(
-            "Keys: 1 Classic, 2 AI vs Human, Q/W/E AI Difficulty, Enter to Start",
+            "Keys: 1 Classic, 2 AI, Enter to Start",
             True,
             (205, 220, 242),
         )
@@ -973,25 +1015,6 @@ class GameManager:
         subtitle_surface = self.body_font.render(subtitle, True, (205, 216, 236))
         subtitle_rect = subtitle_surface.get_rect(center=(rect.centerx, rect.top + int(rect.height * 0.68)))
         self.screen.blit(subtitle_surface, subtitle_rect)
-
-    def _draw_difficulty_chip(self, rect: pygame.Rect, label: str, selected: bool, enabled: bool) -> None:
-        if selected and enabled:
-            fill_color = (96, 150, 232)
-            border_color = (236, 242, 252)
-            text_color = (250, 250, 250)
-        elif enabled:
-            fill_color = (40, 56, 86)
-            border_color = (132, 164, 212)
-            text_color = (214, 228, 248)
-        else:
-            fill_color = (33, 41, 58)
-            border_color = (88, 102, 128)
-            text_color = (145, 158, 182)
-
-        pygame.draw.rect(self.screen, fill_color, rect, border_radius=9)
-        pygame.draw.rect(self.screen, border_color, rect, width=2, border_radius=9)
-        label_surface = self.body_font.render(label, True, text_color)
-        self.screen.blit(label_surface, label_surface.get_rect(center=rect.center))
 
     def _draw_game_over_screen(self) -> None:
         if self.result_model is None:
@@ -1100,17 +1123,69 @@ class GameManager:
         right_bound = max(left_bound, self.width - object_radius)
         return random.uniform(left_bound, right_bound)
 
+    def _record_human_slice_event(self) -> None:
+        self.human_cut_count += 1
+        self.human_slice_events.append(self.elapsed_time)
+        self._record_human_score_event()
+
+    def _record_human_combo_event(self) -> None:
+        self.human_combo_events.append(self.elapsed_time)
+        self._trim_human_performance_windows()
+
+    def _record_human_score_event(self) -> None:
+        self.human_score_timeline.append((self.elapsed_time, self.human_player.score))
+        self._trim_human_performance_windows()
+
+    def _trim_human_performance_windows(self) -> None:
+        keep_after = self.elapsed_time - (AI_PERFORMANCE_WINDOW_SECONDS + 4.0)
+        self.human_slice_events = [stamp for stamp in self.human_slice_events if stamp >= keep_after]
+        self.human_combo_events = [stamp for stamp in self.human_combo_events if stamp >= keep_after]
+        self.human_score_timeline = [entry for entry in self.human_score_timeline if entry[0] >= keep_after]
+        if not self.human_score_timeline:
+            self.human_score_timeline.append((self.elapsed_time, self.human_player.score))
+
+    def _score_at_time(self, sample_time: float) -> int:
+        for timestamp, score in reversed(self.human_score_timeline):
+            if timestamp <= sample_time:
+                return score
+
+        return self.human_score_timeline[0][1]
+
+    def _build_human_performance_snapshot(self) -> tuple[float, float, float]:
+        self._trim_human_performance_windows()
+        now = self.elapsed_time
+
+        cut_window = AI_PERFORMANCE_WINDOW_SECONDS
+        combo_window = AI_PERFORMANCE_WINDOW_SECONDS
+        momentum_window = 4.0
+
+        recent_cuts = sum(1 for stamp in self.human_slice_events if stamp >= now - cut_window)
+        recent_cut_rate = recent_cuts / max(0.1, cut_window)
+
+        recent_combos = sum(1 for stamp in self.human_combo_events if stamp >= now - combo_window)
+        combo_frequency = recent_combos / max(0.1, combo_window)
+
+        past_score = self._score_at_time(max(0.0, now - momentum_window))
+        score_momentum = max(0.0, (self.human_player.score - past_score) / momentum_window)
+        return recent_cut_rate, combo_frequency, score_momentum
+
     def _difficulty_progress_score(self) -> float:
         if self.active_mode == MODE_AI_VS_HUMAN:
             # Use average score so increased spawn rates remain fair in PvAI mode.
             return (self.human_player.score + self.ai_player.score) * 0.5
         return float(self.human_player.score)
 
+    def _round_elapsed_seconds(self) -> float:
+        if self.active_mode != MODE_AI_VS_HUMAN:
+            return self.elapsed_time
+
+        return max(0.0, AI_VS_HUMAN_ROUND_SECONDS - self.round_time_remaining)
+
     def _round_progress(self) -> float:
         if self.active_mode != MODE_AI_VS_HUMAN:
             return 0.0
 
-        elapsed = AI_VS_HUMAN_ROUND_SECONDS - self.round_time_remaining
+        elapsed = self._round_elapsed_seconds()
         progress = elapsed / AI_VS_HUMAN_ROUND_SECONDS
         return max(0.0, min(1.0, progress))
 
@@ -1183,21 +1258,8 @@ class GameManager:
         self.menu_mode_rects[MODE_CLASSIC] = pygame.Rect(card_left, card_top, card_width, card_height)
         self.menu_mode_rects[MODE_AI_VS_HUMAN] = pygame.Rect(card_left + card_width + card_gap, card_top, card_width, card_height)
 
-        chip_width = max(92, min(132, int(self.width * 0.115)))
-        chip_height = max(34, min(52, int(self.height * 0.07)))
-        chip_gap = max(12, int(self.width * 0.012))
-        chip_total = (chip_width * len(DifficultyManager.LEVEL_ORDER)) + (chip_gap * (len(DifficultyManager.LEVEL_ORDER) - 1))
-        chip_left = (self.width // 2) - (chip_total // 2)
-        chip_top = self.menu_mode_rects[MODE_AI_VS_HUMAN].bottom + max(30, int(self.height * 0.04))
-
-        self.menu_difficulty_rects = {}
-        x_pos = chip_left
-        for level in DifficultyManager.LEVEL_ORDER:
-            self.menu_difficulty_rects[level] = pygame.Rect(x_pos, chip_top, chip_width, chip_height)
-            x_pos += chip_width + chip_gap
-
         start_width = max(230, min(340, int(self.width * 0.28)))
         start_height = max(50, min(72, int(self.height * 0.10)))
         start_x = (self.width // 2) - (start_width // 2)
-        start_y = chip_top + chip_height + max(24, int(self.height * 0.045))
+        start_y = self.menu_mode_rects[MODE_AI_VS_HUMAN].bottom + max(36, int(self.height * 0.06))
         self.menu_start_rect = pygame.Rect(start_x, start_y, start_width, start_height)

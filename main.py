@@ -19,6 +19,22 @@ def main() -> None:
     running = True
     is_minimized = False
 
+    def sync_surface_from_os() -> bool:
+        nonlocal screen, is_minimized
+        current_surface = pygame.display.get_surface()
+        if current_surface is None:
+            return False
+
+        current_width, current_height = current_surface.get_size()
+        if current_width <= 0 or current_height <= 0:
+            is_minimized = True
+            return False
+
+        is_minimized = False
+        screen = current_surface
+        game_manager.resize(screen)
+        return True
+
     while running:
         dt = clock.tick(FPS) / 1000.0
         events = pygame.event.get()
@@ -32,32 +48,29 @@ def main() -> None:
                 is_minimized = True
             elif event.type == pygame.WINDOWRESTORED:
                 is_minimized = False
-                current_surface = pygame.display.get_surface()
-                if current_surface is not None:
-                    screen = current_surface
-                    game_manager.resize(screen)
+                sync_surface_from_os()
             elif event.type == pygame.VIDEORESIZE:
                 if event.w <= 0 or event.h <= 0:
                     is_minimized = True
                     continue
 
                 is_minimized = False
+                if sync_surface_from_os():
+                    current_width, current_height = screen.get_size()
+                    if current_width >= MIN_WINDOW_WIDTH and current_height >= MIN_WINDOW_HEIGHT:
+                        continue
+
                 new_width = max(MIN_WINDOW_WIDTH, event.w)
                 new_height = max(MIN_WINDOW_HEIGHT, event.h)
                 screen = pygame.display.set_mode((new_width, new_height), pygame.RESIZABLE)
                 game_manager.resize(screen)
-            elif event.type in (pygame.WINDOWSIZECHANGED, pygame.WINDOWRESIZED):
-                # Do not recreate the window here; just sync manager to OS-applied size.
-                current_surface = pygame.display.get_surface()
-                if current_surface is None:
-                    continue
-                current_width, current_height = current_surface.get_size()
-                if current_width <= 0 or current_height <= 0:
-                    is_minimized = True
-                    continue
-                is_minimized = False
-                screen = current_surface
-                game_manager.resize(screen)
+            elif event.type in (
+                pygame.WINDOWSIZECHANGED,
+                pygame.WINDOWRESIZED,
+                pygame.WINDOWMAXIMIZED,
+            ):
+                # Trust OS-resized surface so title-bar controls remain normal.
+                sync_surface_from_os()
 
         game_manager.handle_events(events)
         if is_minimized:

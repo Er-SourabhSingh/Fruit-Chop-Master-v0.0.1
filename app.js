@@ -12,8 +12,10 @@ const STORAGE_KEYS = {
 
 const SETTINGS_DEFAULTS = {
   mode: MODES.CLASSIC,
-  aiDifficulty: "medium",
+  aiDifficulty: "hard",
 };
+
+const AI_MODE_DIFFICULTY = "hard";
 
 const GAME_CONFIG = {
   fps: 60,
@@ -221,7 +223,7 @@ const Storage = {
       const parsed = JSON.parse(raw);
       return {
         mode: parsed.mode === MODES.AI_VS_HUMAN ? MODES.AI_VS_HUMAN : MODES.CLASSIC,
-        aiDifficulty: AI_DIFFICULTY[parsed.aiDifficulty] ? parsed.aiDifficulty : SETTINGS_DEFAULTS.aiDifficulty,
+        aiDifficulty: AI_MODE_DIFFICULTY,
       };
     } catch {
       return { ...SETTINGS_DEFAULTS };
@@ -1162,8 +1164,6 @@ class GameApp {
     this.restartBtn = document.getElementById("restart-btn");
     this.backMenuBtn = document.getElementById("back-menu-btn");
     this.modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
-    this.difficultyButtons = Array.from(document.querySelectorAll(".difficulty-btn"));
-    this.difficultyGroup = document.getElementById("difficulty-group");
 
     this.hudHumanScore = document.getElementById("hud-human-score");
     this.hudAiScore = document.getElementById("hud-ai-score");
@@ -1185,6 +1185,7 @@ class GameApp {
     this.lastFrameTime = 0;
 
     this.settings = Storage.loadSettings();
+    this.settings.aiDifficulty = AI_MODE_DIFFICULTY;
     this.mode = this.settings.mode;
     this.highScore = Storage.loadHighScore();
     this.newHighScoreAchieved = false;
@@ -1198,7 +1199,7 @@ class GameApp {
     this.blastDuration = 0.5;
 
     this.blade = new BladeTrail();
-    this.aiController = new AIController(this.settings.aiDifficulty);
+    this.aiController = new AIController(AI_MODE_DIFFICULTY);
 
     this.pointer = {
       x: 0,
@@ -1258,20 +1259,9 @@ class GameApp {
       button.addEventListener("click", () => {
         const nextMode = button.dataset.mode === MODES.AI_VS_HUMAN ? MODES.AI_VS_HUMAN : MODES.CLASSIC;
         this.settings.mode = nextMode;
+        this.settings.aiDifficulty = AI_MODE_DIFFICULTY;
         this.mode = nextMode;
-        Storage.saveSettings(this.settings);
-        this.applySettingsToUI();
-      });
-    });
-
-    this.difficultyButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        const nextDifficulty = button.dataset.difficulty;
-        if (!AI_DIFFICULTY[nextDifficulty]) {
-          return;
-        }
-        this.settings.aiDifficulty = nextDifficulty;
-        this.aiController.setDifficulty(nextDifficulty);
+        this.aiController.setDifficulty(AI_MODE_DIFFICULTY);
         Storage.saveSettings(this.settings);
         this.applySettingsToUI();
       });
@@ -1321,12 +1311,6 @@ class GameApp {
     this.modeButtons.forEach((button) => {
       button.classList.toggle("is-active", button.dataset.mode === this.settings.mode);
     });
-
-    this.difficultyButtons.forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.difficulty === this.settings.aiDifficulty);
-    });
-
-    this.difficultyGroup.classList.toggle("hidden", this.settings.mode !== MODES.AI_VS_HUMAN);
   }
 
   resizeCanvas() {
@@ -1430,6 +1414,9 @@ class GameApp {
   startGame() {
     const now = performance.now() / 1000;
     this.mode = this.settings.mode;
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      this.settings.aiDifficulty = AI_MODE_DIFFICULTY;
+    }
     this.state = "running";
     this.pendingEndReason = "";
     this.newHighScoreAchieved = false;
@@ -1453,7 +1440,7 @@ class GameApp {
     this.objects = [];
     this.particles = [];
     this.blade.reset();
-    this.aiController.setDifficulty(this.settings.aiDifficulty);
+    this.aiController.setDifficulty(AI_MODE_DIFFICULTY);
     this.aiController.reset(now);
 
     this.menuOverlay.classList.add("hidden");
@@ -1561,7 +1548,7 @@ class GameApp {
         GAME_CONFIG.aiRoundSeconds,
       );
       const timePacing = this.getAiTimePacing(elapsed);
-      const aiPacing = AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium;
+      const aiPacing = AI_MATCH_PACING[AI_MODE_DIFFICULTY] || AI_MATCH_PACING.hard;
 
       targetSpeed = clamp(timePacing.speedMultiplier * aiPacing.speedScale, 0.88, 2.5);
       targetInterval = clamp(
@@ -1615,8 +1602,8 @@ class GameApp {
   spawnWave() {
     if (this.mode === MODES.AI_VS_HUMAN) {
       const progress = this.roundProgress();
-      const aiPacing = AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium;
-      const isHard = this.settings.aiDifficulty === "hard";
+      const aiPacing = AI_MATCH_PACING[AI_MODE_DIFFICULTY] || AI_MATCH_PACING.hard;
+      const isHard = true;
       let objectCount = 1;
 
       let secondFruitChance = 0.6 + progress * 0.28;
@@ -1675,12 +1662,7 @@ class GameApp {
     let bombChance = 0.1;
     if (this.mode === MODES.AI_VS_HUMAN) {
       const progress = this.roundProgress();
-      const difficultyBombOffset =
-        this.settings.aiDifficulty === "hard"
-          ? 0.02
-          : this.settings.aiDifficulty === "medium"
-            ? 0.01
-            : 0;
+      const difficultyBombOffset = 0.02;
       bombChance = clamp(0.08 + progress * 0.12 + difficultyBombOffset, 0.08, 0.24);
     } else {
       const progressScore = this.humanScore;
@@ -2151,10 +2133,7 @@ class GameApp {
       this.humanHitStreak = 0;
     }
 
-    const difficultyKey = AI_ADAPTIVE_TRACKING.expectations[this.settings.aiDifficulty]
-      ? this.settings.aiDifficulty
-      : "medium";
-    const expected = AI_ADAPTIVE_TRACKING.expectations[difficultyKey];
+    const expected = AI_ADAPTIVE_TRACKING.expectations[AI_MODE_DIFFICULTY];
     const sampleWindow = AI_ADAPTIVE_TRACKING.windowSeconds;
     const cutoff = now - sampleWindow;
     let recentCuts = 0;
@@ -2421,13 +2400,18 @@ class GameApp {
   refreshHud() {
     this.hudHumanScore.textContent = String(this.humanScore);
     this.hudAiScore.textContent = this.mode === MODES.AI_VS_HUMAN ? String(this.aiScore) : "-";
-    this.hudMode.textContent = this.mode === MODES.AI_VS_HUMAN ? "Mode: AI vs Human" : "Mode: Classic";
+    this.hudMode.textContent = this.mode === MODES.AI_VS_HUMAN ? "Mode: AI" : "Mode: Classic";
     this.hudTimer.textContent = this.mode === MODES.AI_VS_HUMAN ? formatTime(this.roundTimeRemaining) : "--:--";
-    this.hudLives.textContent = `Lives: ${this.lives}`;
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      this.hudLives.textContent = "";
+      this.hudLives.classList.add("hidden");
+    } else {
+      this.hudLives.textContent = `Lives: ${this.lives}`;
+      this.hudLives.classList.remove("hidden");
+    }
     if (this.mode === MODES.AI_VS_HUMAN) {
       const boostLabel = this.aiController.adaptiveStageLabel;
-      const boostText = boostLabel !== "x1" ? ` | Boost ${boostLabel}` : "";
-      this.hudDifficulty.textContent = `AI Difficulty: ${this.aiController.difficultyLabel}${boostText}`;
+      this.hudDifficulty.textContent = boostLabel === "x1" ? "" : `AI Boost: ${boostLabel}`;
     } else {
       this.hudDifficulty.textContent = "";
     }
