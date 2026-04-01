@@ -28,24 +28,51 @@ const GAME_CONFIG = {
 const AI_DIFFICULTY = {
   easy: {
     label: "Easy",
-    fruitHitChanceRange: [0.45, 0.55],
-    reactionDelayRange: [0.4, 0.7],
-    comboChanceRange: [0.1, 0.15],
-    bombAvoidance: 0.6,
+    fruitHitChanceRange: [0.46, 0.57],
+    reactionDelayRange: [0.4, 0.68],
+    comboChanceRange: [0.1, 0.16],
+    bombAvoidance: 0.62,
+    tripleComboChance: 0.12,
+    primaryHitBoost: 0.04,
+    recoveryHitChance: 0.12,
   },
   medium: {
     label: "Medium",
-    fruitHitChanceRange: [0.6, 0.7],
-    reactionDelayRange: [0.25, 0.45],
-    comboChanceRange: [0.2, 0.3],
-    bombAvoidance: 0.8,
+    fruitHitChanceRange: [0.65, 0.74],
+    reactionDelayRange: [0.23, 0.4],
+    comboChanceRange: [0.22, 0.32],
+    bombAvoidance: 0.84,
+    tripleComboChance: 0.28,
+    primaryHitBoost: 0.06,
+    recoveryHitChance: 0.24,
   },
   hard: {
     label: "Hard",
-    fruitHitChanceRange: [0.75, 0.85],
-    reactionDelayRange: [0.12, 0.25],
-    comboChanceRange: [0.35, 0.45],
-    bombAvoidance: 0.92,
+    fruitHitChanceRange: [0.86, 0.95],
+    reactionDelayRange: [0.09, 0.18],
+    comboChanceRange: [0.4, 0.54],
+    bombAvoidance: 0.94,
+    tripleComboChance: 0.46,
+    primaryHitBoost: 0.12,
+    recoveryHitChance: 0.5,
+  },
+};
+
+const AI_MATCH_PACING = {
+  easy: {
+    speedScale: 0.95,
+    spawnIntervalScale: 1.08,
+    waveDensity: 0.9,
+  },
+  medium: {
+    speedScale: 1.05,
+    spawnIntervalScale: 0.94,
+    waveDensity: 1.08,
+  },
+  hard: {
+    speedScale: 1.15,
+    spawnIntervalScale: 0.86,
+    waveDensity: 1.18,
   },
 };
 
@@ -334,25 +361,38 @@ class BladeTrail {
     return hits;
   }
 
-  getSegments(bounds) {
+  getTimedSegments(bounds) {
     if (this.points.length < 2) {
       return [];
     }
 
     const segments = [];
     for (let i = 1; i < this.points.length; i += 1) {
-      const start = { x: this.points[i - 1].x, y: this.points[i - 1].y };
-      const end = { x: this.points[i].x, y: this.points[i].y };
+      const startPoint = this.points[i - 1];
+      const endPoint = this.points[i];
+      const start = { x: startPoint.x, y: startPoint.y };
+      const end = { x: endPoint.x, y: endPoint.y };
       const clipped = clipSegmentToBounds(start, end, bounds);
       if (clipped) {
-        segments.push({ start: clipped[0], end: clipped[1] });
+        segments.push({
+          start: clipped[0],
+          end: clipped[1],
+          time: endPoint.t,
+        });
       }
     }
     return segments;
   }
 
+  getSegments(bounds) {
+    return this.getTimedSegments(bounds).map((segment) => ({
+      start: segment.start,
+      end: segment.end,
+    }));
+  }
+
   draw(ctx, bounds) {
-    const segments = this.getSegments(bounds);
+    const segments = this.getTimedSegments(bounds);
     if (!segments.length) {
       return;
     }
@@ -507,7 +547,6 @@ class AISlashEffect {
 
 class AIController {
   constructor(level = "medium") {
-    this.score = 0;
     this.comboText = "";
     this.comboTimer = 0;
     this.statusText = "";
@@ -526,7 +565,6 @@ class AIController {
   }
 
   reset(now) {
-    this.score = 0;
     this.comboText = "";
     this.comboTimer = 0;
     this.statusText = "";
@@ -570,32 +608,27 @@ class AIController {
       return null;
     }
 
-    const pressure = (roundProgress - 0.5) * 0.06;
-    const fruitHitChance = clamp(randomRange(...this.profile.fruitHitChanceRange) + pressure, 0.15, 0.96);
-    const comboChance = clamp(randomRange(...this.profile.comboChanceRange) + pressure * 0.8, 0, 0.88);
+    // Keep higher difficulties consistently stronger while still fair.
+    const pressure = roundProgress * 0.08;
+    const fruitHitChance = clamp(randomRange(...this.profile.fruitHitChanceRange) + pressure, 0.2, 0.985);
+    const comboChance = clamp(randomRange(...this.profile.comboChanceRange) + pressure * 0.55, 0.05, 0.9);
 
-    const targets = this.pickTargets([...regularFruits, ...hearts], comboChance, bounds);
-    const slicedTargets = targets.filter(() => Math.random() < fruitHitChance);
-    const scoredTargets = slicedTargets.filter((obj) => obj.kind === "fruit");
-
-    let comboBonus = 0;
-    let pointsGained = 0;
-    if (scoredTargets.length) {
-      pointsGained = scoredTargets.length;
-      if (scoredTargets.length > 1) {
-        comboBonus = comboBonusForHits(scoredTargets.length);
-        pointsGained += comboBonus;
-        this.comboText = aiComboText(scoredTargets.length, comboBonus);
-        this.comboTimer = 1;
-      } else {
-        this.statusText = "AI Slice";
-        this.statusTimer = 0.55;
+    const prioritizedFruits = this.prioritizeFruits(regularFruits, bombs, bounds);
+    const prioritizedHearts = this.prioritizeHearts(hearts, bounds);
+    const targets = this.pickTargets([...prioritizedFruits, ...prioritizedHearts], comboChance, bombs, bounds);
+    const slicedTargets = [];
+    targets.forEach((target, index) => {
+      const bonus = index === 0 ? this.profile.primaryHitBoost || 0 : 0;
+      const targetHitChance = clamp(fruitHitChance + bonus, 0.2, 0.99);
+      if (Math.random() < targetHitChance) {
+        slicedTargets.push(target);
       }
-      this.score += pointsGained;
-      this.spawnSlashTrail(slicedTargets, true, false, bounds);
-    } else if (slicedTargets.length) {
-      this.statusText = "AI Slice";
-      this.statusTimer = 0.45;
+    });
+    if (!slicedTargets.length && targets.length && Math.random() < (this.profile.recoveryHitChance || 0)) {
+      slicedTargets.push(targets[0]);
+    }
+
+    if (slicedTargets.length) {
       this.spawnSlashTrail(slicedTargets, true, false, bounds);
     } else if (targets.length) {
       this.spawnSlashTrail([targets[0]], false, false, bounds);
@@ -616,14 +649,30 @@ class AIController {
       return null;
     }
 
-    return { slicedTargets, bombTarget, pointsGained, comboBonus };
+    return { slicedTargets, bombTarget };
   }
 
   applyBombPenalty(penalty) {
     const amount = Math.max(0, penalty);
-    this.score = Math.max(0, this.score - amount);
     this.statusText = `AI Mistake -${amount}`;
     this.statusTimer = 1;
+    return amount;
+  }
+
+  setComboFeedback(hits) {
+    const safeHits = Math.max(0, Math.floor(hits));
+    if (safeHits <= 1) {
+      return 0;
+    }
+    const bonus = comboBonusForHits(safeHits);
+    this.comboText = aiComboText(safeHits, bonus);
+    this.comboTimer = 1;
+    return bonus;
+  }
+
+  setSliceStatus(text = "AI Slice", duration = 0.55) {
+    this.statusText = text;
+    this.statusTimer = duration;
   }
 
   draw(ctx, bounds) {
@@ -672,12 +721,33 @@ class AIController {
     return now - this.visibleSince.get(obj.id) >= delay;
   }
 
-  pickTargets(candidates, comboChance, bounds) {
+  prioritizeFruits(fruits, bombs, bounds) {
+    if (!fruits.length) {
+      return [];
+    }
+    const filtered = fruits.filter((fruit) => this.shouldAttemptFruit(fruit, bombs));
+    const base = filtered.length ? filtered : fruits;
+    return [...base].sort(
+      (a, b) => this.fruitPriorityScore(b, bombs, bounds) - this.fruitPriorityScore(a, bombs, bounds),
+    );
+  }
+
+  prioritizeHearts(hearts, bounds) {
+    if (!hearts.length) {
+      return [];
+    }
+    return [...hearts].sort((a, b) => this.objectUrgencyScore(b, bounds) - this.objectUrgencyScore(a, bounds));
+  }
+
+  pickTargets(candidates, comboChance, bombs, bounds) {
     if (!candidates.length) {
       return [];
     }
-    const centerX = (bounds.left + bounds.right) * 0.5;
-    const sorted = [...candidates].sort((a, b) => a.y - b.y || Math.abs(a.x - centerX) - Math.abs(b.x - centerX));
+    const sorted = [...candidates].sort(
+      (a, b) =>
+        this.generalPriorityScore(b, bombs, bounds) -
+        this.generalPriorityScore(a, bombs, bounds),
+    );
     if (sorted.length === 1) {
       return [sorted[0]];
     }
@@ -694,15 +764,75 @@ class AIController {
     });
 
     let targetCount = 2;
-    if (nearby.length >= 3 && Math.random() < 0.36) {
+    if (nearby.length >= 3 && Math.random() < (this.profile.tripleComboChance || 0.3)) {
       targetCount = 3;
     }
     return nearby.slice(0, targetCount);
   }
 
   shouldMakeBombMistake() {
-    const mistakeBase = Math.max(0.02, (1 - this.profile.bombAvoidance) * 0.5);
+    const mistakeBase = clamp((1 - this.profile.bombAvoidance) * 0.45, 0.01, 0.25);
     return Math.random() < mistakeBase;
+  }
+
+  shouldAttemptFruit(fruit, bombs) {
+    if (!bombs.length) {
+      return true;
+    }
+    const risky = this.isRiskyNearBomb(fruit, bombs);
+    if (!risky) {
+      return true;
+    }
+
+    if (this.difficultyLevel === "hard") {
+      return Math.random() < 0.06;
+    }
+    if (this.difficultyLevel === "medium") {
+      return Math.random() < 0.16;
+    }
+    return Math.random() < 0.48;
+  }
+
+  isRiskyNearBomb(target, bombs) {
+    const baseBuffer =
+      this.difficultyLevel === "hard" ? 42 : this.difficultyLevel === "medium" ? 30 : 18;
+    return bombs.some((bomb) => {
+      const dx = target.x - bomb.x;
+      const dy = target.y - bomb.y;
+      const minSafeDistance = target.radius + bomb.radius + baseBuffer;
+      return dx * dx + dy * dy <= minSafeDistance * minSafeDistance;
+    });
+  }
+
+  objectUrgencyScore(obj, bounds) {
+    const timeToExit = this.estimateTimeToBottomExit(obj, bounds);
+    return 1 / (0.14 + timeToExit);
+  }
+
+  estimateTimeToBottomExit(obj, bounds) {
+    const distance = Math.max(0, bounds.bottom + obj.radius - obj.y);
+    if (obj.vy > 0) {
+      return distance / Math.max(45, obj.vy);
+    }
+    return 1.7 + Math.abs(obj.vy) / 520;
+  }
+
+  fruitPriorityScore(fruit, bombs, bounds) {
+    const urgency = this.objectUrgencyScore(fruit, bounds);
+    const centerX = (bounds.left + bounds.right) * 0.5;
+    const centerPenalty = Math.abs(fruit.x - centerX) / Math.max(1, bounds.right - bounds.left);
+    const riskyPenalty = this.isRiskyNearBomb(fruit, bombs) ? 0.46 : 0;
+    return urgency * 3.4 - centerPenalty * 0.35 - riskyPenalty;
+  }
+
+  generalPriorityScore(obj, bombs, bounds) {
+    if (obj.kind === "fruit") {
+      return this.fruitPriorityScore(obj, bombs, bounds);
+    }
+    if (obj.kind === "heart") {
+      return this.objectUrgencyScore(obj, bounds) * 2.1;
+    }
+    return this.objectUrgencyScore(obj, bounds) * 0.6;
   }
 
   spawnSlashTrail(targets, success, bomb, bounds) {
@@ -1104,11 +1234,12 @@ class GameApp {
     this.updateDifficulty(dt);
     this.updateSpawning(dt);
     this.updateObjects(dt);
-    this.handleHumanSlicing();
-
-    if (this.state === "running" && this.mode === MODES.AI_VS_HUMAN) {
-      this.handleAiTurn(now);
-    }
+    const humanClaims = this.collectHumanSliceClaims();
+    const aiDecision =
+      this.state === "running" && this.mode === MODES.AI_VS_HUMAN
+        ? this.aiController.decide(now, this.objects, this.bounds, this.roundProgress())
+        : null;
+    this.resolveSliceClaims(now, humanClaims, aiDecision);
 
     if (this.state === "running") {
       this.handleMissedObjects();
@@ -1122,6 +1253,10 @@ class GameApp {
     this.elapsedTime += dt;
     const progressScore =
       this.mode === MODES.AI_VS_HUMAN ? (this.humanScore + this.aiScore) * 0.5 : this.humanScore;
+    const aiPacing =
+      this.mode === MODES.AI_VS_HUMAN
+        ? AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium
+        : null;
 
     let targetSpeed = 1;
     let targetInterval = GAME_CONFIG.baseSpawnInterval;
@@ -1136,6 +1271,11 @@ class GameApp {
       const high = progressScore - 50;
       targetSpeed = clamp(1.28 + high * 0.008, 1.28, 1.85);
       targetInterval = clamp(0.77 - high * 0.0025, 0.34, 0.77);
+    }
+
+    if (aiPacing) {
+      targetSpeed = clamp(targetSpeed * aiPacing.speedScale, 0.85, 2.15);
+      targetInterval = clamp(targetInterval * aiPacing.spawnIntervalScale, 0.28, 1.1);
     }
 
     const smoothing = Math.min(1, dt * 4);
@@ -1157,11 +1297,21 @@ class GameApp {
     const progressScore =
       this.mode === MODES.AI_VS_HUMAN ? (this.humanScore + this.aiScore) * 0.5 : this.humanScore;
     const difficulty = Math.min(1, progressScore / 85);
+    const aiPacing =
+      this.mode === MODES.AI_VS_HUMAN
+        ? AI_MATCH_PACING[this.settings.aiDifficulty] || AI_MATCH_PACING.medium
+        : null;
     let objectCount = 1;
-    if (Math.random() < 0.45 + difficulty * 0.35) {
+    let secondFruitChance = 0.45 + difficulty * 0.35;
+    let thirdFruitChance = 0.15 + difficulty * 0.3;
+    if (aiPacing) {
+      secondFruitChance = clamp(secondFruitChance * aiPacing.waveDensity, 0.1, 0.98);
+      thirdFruitChance = clamp(thirdFruitChance * (aiPacing.waveDensity + 0.04), 0.04, 0.88);
+    }
+    if (Math.random() < secondFruitChance) {
       objectCount += 1;
     }
-    if (Math.random() < 0.15 + difficulty * 0.3) {
+    if (Math.random() < thirdFruitChance) {
       objectCount += 1;
     }
     for (let i = 0; i < objectCount; i += 1) {
@@ -1296,41 +1446,40 @@ class GameApp {
     });
   }
 
-  handleHumanSlicing() {
-    const segments = this.blade.getSegments(this.bounds);
-    if (!segments.length) {
-      return;
+  collectHumanSliceClaims() {
+    const timedSegments = this.blade.getTimedSegments(this.bounds);
+    const claims = new Map();
+    if (!timedSegments.length) {
+      return claims;
     }
 
-    const survivors = [];
-    for (const obj of this.objects) {
-      const hit = segments.some((segment) =>
-        lineCircleCollision(segment.start, segment.end, { x: obj.x, y: obj.y }, obj.radius * 0.95),
-      );
-      if (!hit) {
-        survivors.push(obj);
-        continue;
-      }
+    timedSegments.forEach((segment, segmentIndex) => {
+      this.objects.forEach((obj) => {
+        const collided = lineCircleCollision(
+          segment.start,
+          segment.end,
+          { x: obj.x, y: obj.y },
+          obj.radius * 0.95,
+        );
+        if (!collided) {
+          return;
+        }
 
-      if (obj.kind === "bomb") {
-        this.triggerBombBlast({ x: obj.x, y: obj.y }, "human_bomb");
-        return;
-      }
+        // Segment timestamps preserve first-slice ordering inside fast swipes.
+        const claimTime = segment.time + segmentIndex * 0.000001;
+        const existing = claims.get(obj.id);
+        if (!existing || claimTime < existing.time) {
+          claims.set(obj.id, {
+            objectId: obj.id,
+            owner: "human",
+            time: claimTime,
+            order: segmentIndex,
+          });
+        }
+      });
+    });
 
-      if (obj.kind === "heart") {
-        this.collectHeart(obj);
-        continue;
-      }
-
-      this.sliceFruit(obj);
-    }
-    this.objects = survivors;
-  }
-
-  sliceFruit(fruit) {
-    this.humanScore += 1;
-    this.blade.registerSlice();
-    this.spawnJuiceSplash({ x: fruit.x, y: fruit.y }, fruit.color);
+    return claims;
   }
 
   collectHeart(heart) {
@@ -1338,32 +1487,141 @@ class GameApp {
     this.spawnJuiceSplash({ x: heart.x, y: heart.y }, heart.color);
   }
 
-  handleAiTurn(now) {
-    const decision = this.aiController.decide(now, this.objects, this.bounds, this.roundProgress());
-    if (!decision) {
-      this.aiScore = this.aiController.score;
+  buildAiSliceClaims(now, aiDecision) {
+    const claims = new Map();
+    if (!aiDecision) {
+      return claims;
+    }
+
+    let order = 0;
+    aiDecision.slicedTargets.forEach((target) => {
+      const claim = {
+        objectId: target.id,
+        owner: "ai",
+        time: now + order * 0.000001,
+        order: 1000 + order,
+      };
+      const existing = claims.get(target.id);
+      if (!existing || claim.time < existing.time) {
+        claims.set(target.id, claim);
+      }
+      order += 1;
+    });
+
+    if (aiDecision.bombTarget) {
+      const claim = {
+        objectId: aiDecision.bombTarget.id,
+        owner: "ai",
+        time: now + order * 0.000001,
+        order: 1000 + order,
+      };
+      const existing = claims.get(aiDecision.bombTarget.id);
+      if (!existing || claim.time < existing.time) {
+        claims.set(aiDecision.bombTarget.id, claim);
+      }
+    }
+
+    return claims;
+  }
+
+  resolveSliceClaims(now, humanClaims, aiDecision) {
+    const aiClaims = this.buildAiSliceClaims(now, aiDecision);
+    if (!humanClaims.size && !aiClaims.size) {
       return;
     }
 
-    const removedIds = new Set();
-    decision.slicedTargets.forEach((target) => {
-      removedIds.add(target.id);
-      const splashColor = target.kind === "heart" ? "#ff80a4" : "#62b0ff";
-      this.spawnJuiceSplash({ x: target.x, y: target.y }, splashColor);
-    });
+    const winningClaims = new Map();
+    const registerClaim = (claim) => {
+      const previous = winningClaims.get(claim.objectId);
+      if (!previous) {
+        winningClaims.set(claim.objectId, claim);
+        return;
+      }
 
-    if (decision.bombTarget) {
-      removedIds.add(decision.bombTarget.id);
-      this.aiController.applyBombPenalty(GAME_CONFIG.aiBombPenalty);
-      this.spawnJuiceSplash({ x: decision.bombTarget.x, y: decision.bombTarget.y }, "#ff7373");
-      this.spawnJuiceSplash({ x: decision.bombTarget.x, y: decision.bombTarget.y }, "#ff7373");
+      if (claim.time < previous.time) {
+        winningClaims.set(claim.objectId, claim);
+        return;
+      }
+
+      if (claim.time === previous.time && claim.order < previous.order) {
+        winningClaims.set(claim.objectId, claim);
+      }
+    };
+
+    humanClaims.forEach((claim) => registerClaim(claim));
+    aiClaims.forEach((claim) => registerClaim(claim));
+
+    let humanFruitHits = 0;
+    let aiFruitHits = 0;
+    let aiBombHits = 0;
+    const removeIds = new Set();
+
+    for (const obj of this.objects) {
+      const winner = winningClaims.get(obj.id);
+      if (!winner) {
+        continue;
+      }
+
+      removeIds.add(obj.id);
+      if (winner.owner === "human") {
+        if (obj.kind === "bomb") {
+          this.triggerBombBlast({ x: obj.x, y: obj.y }, "human_bomb");
+          return;
+        }
+
+        if (obj.kind === "heart") {
+          this.collectHeart(obj);
+          continue;
+        }
+
+        humanFruitHits += 1;
+        this.spawnJuiceSplash({ x: obj.x, y: obj.y }, obj.color);
+        continue;
+      }
+
+      if (obj.kind === "bomb") {
+        aiBombHits += 1;
+        this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#ff7373");
+        this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#ff7373");
+        continue;
+      }
+
+      if (obj.kind === "heart") {
+        this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#ff80a4");
+        continue;
+      }
+
+      aiFruitHits += 1;
+      this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#62b0ff");
     }
 
-    if (removedIds.size > 0) {
-      this.objects = this.objects.filter((obj) => !removedIds.has(obj.id));
+    if (removeIds.size > 0) {
+      this.objects = this.objects.filter((obj) => !removeIds.has(obj.id));
     }
 
-    this.aiScore = this.aiController.score;
+    if (humanFruitHits > 0) {
+      this.humanScore += humanFruitHits;
+      for (let i = 0; i < humanFruitHits; i += 1) {
+        this.blade.registerSlice();
+      }
+    }
+
+    if (aiFruitHits > 0) {
+      this.aiScore += aiFruitHits;
+      if (aiFruitHits > 1) {
+        const comboBonus = this.aiController.setComboFeedback(aiFruitHits);
+        this.aiScore += comboBonus;
+      } else {
+        this.aiController.setSliceStatus("AI Slice", 0.55);
+      }
+    }
+
+    if (aiBombHits > 0) {
+      for (let i = 0; i < aiBombHits; i += 1) {
+        const penalty = this.aiController.applyBombPenalty(GAME_CONFIG.aiBombPenalty);
+        this.aiScore = Math.max(0, this.aiScore - penalty);
+      }
+    }
   }
 
   handleMissedObjects() {
