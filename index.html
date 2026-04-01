@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="description" content="Fruit Chop Master - slice fruits in a fast arcade challenge." />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>Fruit Chop Master</title>
+  </head>
+  <body>
+    <div id="app-shell">
+      <header id="hud" class="hud hidden">
+        <div class="hud-side">
+          <p class="hud-label">Human</p>
+          <p class="hud-value" id="hud-human-score">0</p>
+          <p class="hud-sub" id="hud-lives">Lives: ❤ ❤ ❤</p>
+        </div>
+        <div class="hud-center">
+          <p class="hud-label" id="hud-mode">Mode: Classic</p>
+          <p class="hud-timer" id="hud-timer">00:00</p>
+          <p class="hud-sub" id="hud-difficulty"></p>
+        </div>
+        <div class="hud-side hud-side-right">
+          <p class="hud-label">AI</p>
+          <p class="hud-value" id="hud-ai-score">0</p>
+          <p class="hud-sub" id="hud-high-score">Best: 0</p>
+        </div>
+      </header>
+
+      <canvas id="game-canvas" aria-label="Fruit Chop Master game canvas"></canvas>
+
+      <section id="menu-overlay" class="overlay">
+        <div class="panel">
+          <h1>Fruit Chop Master</h1>
+          <p class="panel-subtitle">Progressive Web App Edition</p>
+          <div class="button-row">
+            <button class="mode-btn is-active" data-mode="classic" type="button">Classic</button>
+            <button class="mode-btn" data-mode="ai_vs_human" type="button">AI vs Human</button>
+          </div>
+          <div id="difficulty-group" class="difficulty-group">
+            <p>AI Difficulty</p>
+            <div class="button-row">
+              <button class="difficulty-btn" data-difficulty="easy" type="button">Easy</button>
+              <button class="difficulty-btn is-active" data-difficulty="medium" type="button">Medium</button>
+              <button class="difficulty-btn" data-difficulty="hard" type="button">Hard</button>
+            </div>
+          </div>
+          <div class="button-column">
+            <button id="start-btn" class="cta-btn" type="button">Start Match</button>
+            <button id="install-btn" class="secondary-btn hidden" type="button">Install App</button>
+          </div>
+          <p class="small-note">
+            Touch or mouse swipe to slice. Works offline after first successful load.
+          </p>
+        </div>
+      </section>
+
+      <section id="result-overlay" class="overlay hidden">
+        <div class="panel">
+          <h2 id="result-title">Match Over</h2>
+          <p id="result-outcome" class="result-outcome">You Win!</p>
+          <div class="result-grid">
+            <p>Human: <strong id="result-human-score">0</strong></p>
+            <p>AI: <strong id="result-ai-score">0</strong></p>
+            <p>Best: <strong id="result-high-score">0</strong></p>
+            <p id="result-new-high" class="hidden">New High Score!</p>
+          </div>
+          <div class="button-row">
+            <button id="restart-btn" class="cta-btn" type="button">Restart</button>
+            <button id="back-menu-btn" class="secondary-btn" type="button">Back To Menu</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

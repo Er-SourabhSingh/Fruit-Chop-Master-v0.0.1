@@ -9,6 +9,42 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## PWA Web App
+
+The project now also includes a browser-first Progressive Web App build:
+
+- Entry: `index.html`
+- Game runtime: `app.js`
+- Styles: `styles.css`
+- Manifest: `manifest.webmanifest`
+- Service worker: `sw.js`
+- Icons: `icons/`
+
+### Run The PWA Locally
+
+Use a local HTTP server (required for service worker):
+
+```bash
+python -m http.server 8080
+```
+
+Then open:
+
+```text
+http://localhost:8080
+```
+
+### PWA Features
+
+- Installable on desktop/mobile (standalone mode)
+- Offline app shell after first successful load
+- Touch + mouse slicing controls
+- Responsive canvas layout
+- Local storage persistence for:
+  - high score
+  - selected mode
+  - selected AI difficulty
+
 ## Window
 - Resizable window (`pygame.RESIZABLE`)
 - Supports maximize/restore

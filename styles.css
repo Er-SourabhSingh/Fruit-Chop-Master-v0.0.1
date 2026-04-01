@@ -1,0 +1,237 @@
+:root {
+  color-scheme: dark;
+  --bg-1: #05141f;
+  --bg-2: #12324d;
+  --panel: rgba(9, 23, 36, 0.82);
+  --panel-border: rgba(157, 209, 255, 0.42);
+  --text-main: #f5f8ff;
+  --text-muted: #c7d8f0;
+  --accent: #63b3ff;
+  --accent-alt: #ffb454;
+  --danger: #ff7272;
+  --success: #7fef9e;
+}
+
+* {
+  box-sizing: border-box;
+  touch-action: none;
+  user-select: none;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% -25%, #20527d 0%, var(--bg-2) 40%, var(--bg-1) 100%);
+  color: var(--text-main);
+  font-family: "Segoe UI", "Trebuchet MS", system-ui, sans-serif;
+}
+
+#app-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+#game-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: transparent;
+}
+
+.hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.5rem;
+  padding: max(env(safe-area-inset-top), 0.6rem) 0.9rem 0.8rem;
+  background: linear-gradient(180deg, rgba(2, 7, 15, 0.78), rgba(2, 7, 15, 0));
+}
+
+.hud-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.08rem;
+}
+
+.hud-side-right {
+  align-items: flex-end;
+}
+
+.hud-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.hud-label {
+  margin: 0;
+  font-size: 0.83rem;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.hud-value {
+  margin: 0;
+  font-size: clamp(1rem, 3.6vw, 1.8rem);
+  font-weight: 700;
+}
+
+.hud-sub {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #d7e7fa;
+}
+
+.hud-timer {
+  margin: 0.1rem 0;
+  font-size: clamp(1.3rem, 4.7vw, 2rem);
+  font-weight: 800;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: linear-gradient(180deg, rgba(2, 8, 18, 0.58), rgba(2, 8, 18, 0.82));
+}
+
+.panel {
+  width: min(560px, 100%);
+  border: 1px solid var(--panel-border);
+  border-radius: 1rem;
+  padding: 1.2rem 1.1rem;
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 14px 44px rgba(4, 12, 24, 0.58);
+}
+
+.panel h1,
+.panel h2 {
+  margin: 0;
+  text-align: center;
+  font-size: clamp(1.6rem, 6vw, 2.35rem);
+}
+
+.panel-subtitle {
+  text-align: center;
+  margin: 0.35rem 0 1rem;
+  color: var(--text-muted);
+}
+
+.button-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.button-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+button {
+  border: 1px solid transparent;
+  border-radius: 0.65rem;
+  padding: 0.68rem 0.85rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text-main);
+  background: rgba(75, 109, 146, 0.35);
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+.mode-btn,
+.difficulty-btn {
+  flex: 1;
+}
+
+.mode-btn.is-active,
+.difficulty-btn.is-active {
+  border-color: rgba(241, 249, 255, 0.72);
+  background: rgba(92, 149, 217, 0.74);
+}
+
+.difficulty-group {
+  margin: 0.92rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.difficulty-group p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.cta-btn {
+  width: 100%;
+  background: linear-gradient(180deg, #4bb36f, #3f8f59);
+}
+
+.secondary-btn {
+  width: 100%;
+  background: rgba(85, 124, 172, 0.52);
+}
+
+.small-note {
+  margin: 0.95rem 0 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.81rem;
+}
+
+.result-outcome {
+  margin: 0.42rem 0 0.6rem;
+  text-align: center;
+  font-size: clamp(1.2rem, 4.5vw, 1.9rem);
+  font-weight: 700;
+}
+
+.result-grid {
+  margin: 0.9rem 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+}
+
+.result-grid p {
+  margin: 0;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@media (max-width: 720px) {
+  .hud {
+    grid-template-columns: 1fr;
+    text-align: center;
+    padding-top: max(env(safe-area-inset-top), 0.4rem);
+  }
+
+  .hud-side,
+  .hud-side-right {
+    align-items: center;
+  }
+
+  .result-grid {
+    grid-template-columns: 1fr;
+  }
+}
