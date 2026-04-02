@@ -40,6 +40,12 @@ AI_SPEED_STAGES = (
 )
 
 AI_PERFORMANCE_WINDOW_SECONDS = 6.0
+ROUND_START_DELAY_SECONDS = 0.24
+ROUND_COUNTDOWN_STEP_SECONDS = 0.72
+ROUND_COUNTDOWN_SEQUENCE = ("3", "2", "1", "START")
+ROUND_POST_COUNTDOWN_SPAWN_DELAY = 0.18
+AI_OPENING_LOCK_SECONDS = 0.36
+HUMAN_FIRST_REACTION_SECONDS = 0.32
 
 
 @dataclass
@@ -80,6 +86,14 @@ class GameManager:
         self.active_mode = MODE_CLASSIC
         self.round_time_remaining = AI_VS_HUMAN_ROUND_SECONDS
         self.elapsed_time = 0.0
+        self.round_phase = "idle"
+        self.round_countdown_text = ""
+        self.round_start_delay_remaining = 0.0
+        self.round_countdown_step_remaining = 0.0
+        self.round_countdown_step_index = 0
+        self.ai_can_act_at = 0.0
+        self.first_visible_fruit_at: Optional[float] = None
+        self.has_spawned_opening_fruit = False
 
         self.blade = Blade()
         self.human_player = HumanPlayer(score=0, lives=STARTING_LIVES)
@@ -207,6 +221,14 @@ class GameManager:
     def start_game(self) -> None:
         self.active_mode = self.selected_mode
         self.state = "running"
+        self.round_phase = "countdown"
+        self.round_countdown_text = ""
+        self.round_start_delay_remaining = ROUND_START_DELAY_SECONDS
+        self.round_countdown_step_remaining = ROUND_COUNTDOWN_STEP_SECONDS
+        self.round_countdown_step_index = 0
+        self.ai_can_act_at = float("inf")
+        self.first_visible_fruit_at = None
+        self.has_spawned_opening_fruit = False
         self.result_model = None
         self.pending_game_over_reason = ""
         self.game_over_reason = ""
@@ -214,7 +236,7 @@ class GameManager:
         starting_lives = 1 if self.active_mode == MODE_AI_VS_HUMAN else STARTING_LIVES
         self.human_player.reset(starting_lives=starting_lives)
         self.elapsed_time = 0.0
-        self.spawn_cooldown = 0.35
+        self.spawn_cooldown = ROUND_POST_COUNTDOWN_SPAWN_DELAY
         self.heart_spawn_cooldown = random.uniform(4.5, 7.0)
         self.spawn_interval = 0.9
         self.speed_multiplier = 1.0
@@ -235,6 +257,14 @@ class GameManager:
 
     def back_to_menu(self) -> None:
         self.state = "start"
+        self.round_phase = "idle"
+        self.round_countdown_text = ""
+        self.round_start_delay_remaining = 0.0
+        self.round_countdown_step_remaining = 0.0
+        self.round_countdown_step_index = 0
+        self.ai_can_act_at = 0.0
+        self.first_visible_fruit_at = None
+        self.has_spawned_opening_fruit = False
         self.selected_mode = self.active_mode
         self.objects.clear()
         self.particles.clear()
@@ -267,6 +297,10 @@ class GameManager:
         if self.state != "running":
             return
 
+        if self.round_phase == "countdown":
+            self._update_round_countdown(dt, now)
+            return
+
         if self.active_mode == MODE_AI_VS_HUMAN:
             self.round_time_remaining = max(0.0, self.round_time_remaining - dt)
             if self.round_time_remaining <= 0.0:
@@ -280,11 +314,12 @@ class GameManager:
             obj.update(dt)
             obj.constrain_horizontal(self.width)
 
+        self._track_first_visible_fruit(now)
         self._handle_slicing()
         if self.state != "running":
             return
 
-        if self.active_mode == MODE_AI_VS_HUMAN:
+        if self.active_mode == MODE_AI_VS_HUMAN and self._can_ai_take_turn(now):
             self._handle_ai_turn(now)
         if self.state != "running":
             return
@@ -294,6 +329,62 @@ class GameManager:
             return
 
         self._handle_human_combo_bonus()
+
+    def _update_round_countdown(self, dt: float, now: float) -> None:
+        if self.round_phase != "countdown":
+            return
+
+        if self.round_start_delay_remaining > 0.0:
+            self.round_start_delay_remaining = max(0.0, self.round_start_delay_remaining - dt)
+            if self.round_start_delay_remaining > 0.0:
+                self.round_countdown_text = ""
+                return
+            self.round_countdown_text = ROUND_COUNTDOWN_SEQUENCE[0]
+            self.round_countdown_step_remaining = ROUND_COUNTDOWN_STEP_SECONDS
+            self.round_countdown_step_index = 0
+            return
+
+        self.round_countdown_step_remaining = max(0.0, self.round_countdown_step_remaining - dt)
+        if self.round_countdown_step_remaining > 0.0:
+            return
+
+        self.round_countdown_step_index += 1
+        if self.round_countdown_step_index >= len(ROUND_COUNTDOWN_SEQUENCE):
+            self.round_phase = "active"
+            self.round_countdown_text = ""
+            self.ai_can_act_at = now + AI_OPENING_LOCK_SECONDS
+            return
+
+        self.round_countdown_text = ROUND_COUNTDOWN_SEQUENCE[self.round_countdown_step_index]
+        self.round_countdown_step_remaining = ROUND_COUNTDOWN_STEP_SECONDS
+
+    def _track_first_visible_fruit(self, now: float) -> None:
+        if self.active_mode != MODE_AI_VS_HUMAN or self.round_phase != "active" or self.first_visible_fruit_at is not None:
+            return
+
+        for obj in self.objects:
+            if isinstance(obj, (Bomb, HeartPickup)):
+                continue
+            if self._is_fully_visible_in_bounds(obj):
+                self.first_visible_fruit_at = now
+                self.ai_can_act_at = max(self.ai_can_act_at, now + HUMAN_FIRST_REACTION_SECONDS)
+                return
+
+    def _can_ai_take_turn(self, now: float) -> bool:
+        if self.active_mode != MODE_AI_VS_HUMAN or self.round_phase != "active":
+            return False
+        if now < self.ai_can_act_at:
+            return False
+        if self.first_visible_fruit_at is not None and now - self.first_visible_fruit_at < HUMAN_FIRST_REACTION_SECONDS:
+            return False
+        return True
+
+    def _is_fully_visible_in_bounds(self, obj: Fruit) -> bool:
+        left = obj.position.x - obj.radius
+        right = obj.position.x + obj.radius
+        top = obj.position.y - obj.radius
+        bottom = obj.position.y + obj.radius
+        return left >= 0 and right <= self.width and top >= 0 and bottom <= self.height
 
     def draw(self) -> None:
         self._draw_background()
@@ -314,6 +405,8 @@ class GameManager:
             self.blade.draw(self.screen, bounds=self._screen_bounds())
             self._draw_hud()
             self._draw_combo_texts()
+            if self.round_phase == "countdown":
+                self._draw_countdown_overlay()
             return
 
         if self.state == "bomb_blast":
@@ -355,6 +448,8 @@ class GameManager:
         self.spawn_interval += (target_interval - self.spawn_interval) * smoothing
 
     def _handle_spawning(self, dt: float) -> None:
+        if self.round_phase != "active":
+            return
         self.heart_spawn_cooldown = max(0.0, self.heart_spawn_cooldown - dt)
         self.spawn_cooldown -= dt
         if self.spawn_cooldown > 0:
@@ -414,6 +509,11 @@ class GameManager:
         y_pos = self.height + max(55, int(self.height * 0.1))
 
         vx, vy, gravity, scale = self._build_launch_profile()
+        if self.active_mode == MODE_AI_VS_HUMAN and not self.has_spawned_opening_fruit:
+            self._spawn_fruit(position=(x_pos, y_pos), velocity=(vx, vy), gravity=gravity, scale=scale)
+            self.has_spawned_opening_fruit = True
+            return
+
         if self._should_spawn_heart():
             self._spawn_heart(position=(x_pos, y_pos), velocity=(vx, vy), gravity=gravity, scale=scale)
             return
@@ -472,6 +572,8 @@ class GameManager:
         scale: float,
     ) -> None:
         fruit_name = random.choice(FRUIT_TYPES)
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            self.has_spawned_opening_fruit = True
         fruit = Fruit(
             name=fruit_name,
             position=position,
@@ -646,6 +748,7 @@ class GameManager:
         self.game_over_reason = reason
         self._finalize_high_score()
         self.state = "game_over"
+        self.round_phase = "idle"
         self.objects.clear()
         self.blade.reset()
         self.pending_game_over_reason = ""
@@ -729,6 +832,7 @@ class GameManager:
 
     def _trigger_bomb_blast(self, position: pygame.Vector2, reason: str) -> None:
         self.state = "bomb_blast"
+        self.round_phase = "active"
         self.pending_game_over_reason = reason
         self.blast_center = position.copy()
         self.blast_timer = self.blast_duration
@@ -891,7 +995,10 @@ class GameManager:
         timer_rect = timer_surface.get_rect(midtop=(self.width // 2, top_y - 1))
         self.screen.blit(timer_surface, timer_rect)
 
-        mode_surface = self.body_font.render("Mode: AI", True, (220, 232, 252))
+        mode_text = "Mode: AI"
+        if self.round_phase == "countdown":
+            mode_text = f"Starting: {self.round_countdown_text}" if self.round_countdown_text else "Get Ready"
+        mode_surface = self.body_font.render(mode_text, True, (220, 232, 252))
         mode_rect = mode_surface.get_rect(midtop=(self.width // 2, timer_rect.bottom - 2))
         self.screen.blit(mode_surface, mode_rect)
 
@@ -954,41 +1061,51 @@ class GameManager:
             status_rect = status_surface.get_rect(center=(int(self.width * 0.78), max(84, int(self.height * 0.14))))
             self.screen.blit(status_surface, status_rect)
 
+    def _draw_countdown_overlay(self) -> None:
+        if self.state != "running" or self.round_phase != "countdown":
+            return
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        overlay.fill((8, 14, 24, 92))
+        self.screen.blit(overlay, (0, 0))
+
+        text = self.round_countdown_text if self.round_countdown_text else "Get Ready"
+        color = (245, 255, 205) if text == "START" else (248, 251, 255)
+        font = self.title_font if text not in {"START", "Get Ready"} else self.heading_font
+        text_surface = font.render(text, True, color)
+        text_rect = text_surface.get_rect(center=(self.width // 2, self.height // 2))
+        self.screen.blit(text_surface, text_rect)
+
     def _draw_start_screen(self) -> None:
         self._update_menu_layout()
 
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        overlay.fill((8, 12, 20, 124))
+        overlay.fill((9, 14, 22, 118))
         self.screen.blit(overlay, (0, 0))
 
-        title = self.title_font.render("FRUIT SLICE", True, (250, 250, 250))
-        subtitle = self.body_font.render("Choose a mode and start slicing", True, (216, 226, 242))
+        title = self.title_font.render("FRUIT CHOP MASTER", True, (250, 250, 250))
+        subtitle = self.body_font.render("Select mode", True, (216, 226, 242))
         self.screen.blit(title, title.get_rect(center=(self.width // 2, int(self.height * 0.16))))
         self.screen.blit(subtitle, subtitle.get_rect(center=(self.width // 2, int(self.height * 0.23))))
 
         self._draw_mode_card(
             self.menu_mode_rects[MODE_CLASSIC],
-            title="Classic",
-            subtitle="Score chase with lives",
+            label="Classic",
             selected=self.selected_mode == MODE_CLASSIC,
-            accent=(255, 178, 102),
         )
         self._draw_mode_card(
             self.menu_mode_rects[MODE_AI_VS_HUMAN],
-            title="AI",
-            subtitle="60s competitive duel",
+            label="AI",
             selected=self.selected_mode == MODE_AI_VS_HUMAN,
-            accent=(120, 185, 255),
         )
 
-        button_color = (58, 170, 95) if self.selected_mode == MODE_CLASSIC else (64, 142, 224)
-        pygame.draw.rect(self.screen, button_color, self.menu_start_rect, border_radius=12)
-        pygame.draw.rect(self.screen, (242, 242, 242), self.menu_start_rect, width=2, border_radius=12)
-        start_label = self.heading_font.render("Start Match", True, (248, 248, 248))
+        pygame.draw.rect(self.screen, (54, 146, 88), self.menu_start_rect, border_radius=12)
+        pygame.draw.rect(self.screen, (242, 242, 242), self.menu_start_rect, width=1, border_radius=12)
+        start_label = self.heading_font.render("Start Match", True, (248, 251, 248))
         self.screen.blit(start_label, start_label.get_rect(center=self.menu_start_rect.center))
 
         hint_line = self.body_font.render(
-            "Keys: 1 Classic, 2 AI, Enter to Start",
+            "1: Classic   2: AI   Enter: Start",
             True,
             (205, 220, 242),
         )
@@ -998,23 +1115,17 @@ class GameManager:
     def _draw_mode_card(
         self,
         rect: pygame.Rect,
-        title: str,
-        subtitle: str,
+        label: str,
         selected: bool,
-        accent: tuple[int, int, int],
     ) -> None:
-        fill_color = (38, 48, 72) if selected else (26, 34, 54)
-        border_color = accent if selected else (124, 142, 176)
-        pygame.draw.rect(self.screen, fill_color, rect, border_radius=14)
-        pygame.draw.rect(self.screen, border_color, rect, width=3 if selected else 2, border_radius=14)
+        fill_color = (63, 126, 185) if selected else (28, 42, 62)
+        border_color = (236, 244, 255) if selected else (124, 142, 176)
+        pygame.draw.rect(self.screen, fill_color, rect, border_radius=12)
+        pygame.draw.rect(self.screen, border_color, rect, width=2, border_radius=12)
 
-        title_surface = self.ui_font.render(title, True, (246, 246, 246))
-        title_rect = title_surface.get_rect(center=(rect.centerx, rect.top + int(rect.height * 0.34)))
-        self.screen.blit(title_surface, title_rect)
-
-        subtitle_surface = self.body_font.render(subtitle, True, (205, 216, 236))
-        subtitle_rect = subtitle_surface.get_rect(center=(rect.centerx, rect.top + int(rect.height * 0.68)))
-        self.screen.blit(subtitle_surface, subtitle_rect)
+        label_surface = self.ui_font.render(label, True, (246, 246, 246))
+        label_rect = label_surface.get_rect(center=rect.center)
+        self.screen.blit(label_surface, label_rect)
 
     def _draw_game_over_screen(self) -> None:
         if self.result_model is None:
@@ -1248,18 +1359,38 @@ class GameManager:
         return int(round(clamped.x)), int(round(clamped.y))
 
     def _update_menu_layout(self) -> None:
-        card_width = max(220, min(330, int(self.width * 0.28)))
-        card_height = max(118, min(170, int(self.height * 0.20)))
-        card_gap = max(18, min(48, int(self.width * 0.035)))
-        total_width = (card_width * 2) + card_gap
-        card_left = (self.width // 2) - (total_width // 2)
-        card_top = int(self.height * 0.33)
+        if self.width < 760:
+            card_width = max(210, min(420, int(self.width * 0.74)))
+            card_height = max(78, min(110, int(self.height * 0.14)))
+            card_gap = max(14, min(26, int(self.height * 0.03)))
+            card_left = (self.width // 2) - (card_width // 2)
+            card_top = int(self.height * 0.32)
 
-        self.menu_mode_rects[MODE_CLASSIC] = pygame.Rect(card_left, card_top, card_width, card_height)
-        self.menu_mode_rects[MODE_AI_VS_HUMAN] = pygame.Rect(card_left + card_width + card_gap, card_top, card_width, card_height)
+            self.menu_mode_rects[MODE_CLASSIC] = pygame.Rect(card_left, card_top, card_width, card_height)
+            self.menu_mode_rects[MODE_AI_VS_HUMAN] = pygame.Rect(
+                card_left,
+                card_top + card_height + card_gap,
+                card_width,
+                card_height,
+            )
+        else:
+            card_width = max(220, min(330, int(self.width * 0.28)))
+            card_height = max(118, min(170, int(self.height * 0.20)))
+            card_gap = max(18, min(48, int(self.width * 0.035)))
+            total_width = (card_width * 2) + card_gap
+            card_left = (self.width // 2) - (total_width // 2)
+            card_top = int(self.height * 0.33)
 
-        start_width = max(230, min(340, int(self.width * 0.28)))
-        start_height = max(50, min(72, int(self.height * 0.10)))
+            self.menu_mode_rects[MODE_CLASSIC] = pygame.Rect(card_left, card_top, card_width, card_height)
+            self.menu_mode_rects[MODE_AI_VS_HUMAN] = pygame.Rect(
+                card_left + card_width + card_gap,
+                card_top,
+                card_width,
+                card_height,
+            )
+
+        start_width = max(220, min(340, int(self.width * 0.34)))
+        start_height = max(48, min(72, int(self.height * 0.10)))
         start_x = (self.width // 2) - (start_width // 2)
-        start_y = self.menu_mode_rects[MODE_AI_VS_HUMAN].bottom + max(36, int(self.height * 0.06))
+        start_y = self.menu_mode_rects[MODE_AI_VS_HUMAN].bottom + max(24, int(self.height * 0.05))
         self.menu_start_rect = pygame.Rect(start_x, start_y, start_width, start_height)

@@ -28,6 +28,15 @@ const GAME_CONFIG = {
   baseSpawnInterval: 0.9,
 };
 
+const ROUND_FLOW = {
+  startDelaySeconds: 0.24,
+  countdownStepSeconds: 0.72,
+  countdownSequence: ["3", "2", "1", "START"],
+  postCountdownSpawnDelaySeconds: 0.18,
+  aiOpeningLockSeconds: 0.36,
+  humanFirstReactionWindowSeconds: 0.32,
+};
+
 const AI_DIFFICULTY = {
   easy: {
     label: "Easy",
@@ -146,6 +155,45 @@ const FRUIT_TYPES = [
   { name: "pineapple", color: "#f2b550" },
   { name: "orange", color: "#f99f3d" },
 ];
+
+const FRUIT_STYLE = {
+  apple: {
+    body: ["#cb233b", "#e4485c"],
+    shadow: "#8e1828",
+    highlight: "rgba(255, 238, 240, 0.8)",
+    stem: "#7a4e2d",
+    leaf: "#5ea559",
+  },
+  orange: {
+    body: ["#e28720", "#f7a93d"],
+    shadow: "#c36e15",
+    highlight: "rgba(255, 236, 196, 0.78)",
+    stem: "#7f6a33",
+    leaf: "#6cae64",
+  },
+  watermelon: {
+    rindDark: "#286933",
+    rindMid: "#6ba35e",
+    flesh: "#de4e5b",
+    seed: "#281718",
+    highlight: "rgba(255, 218, 224, 0.42)",
+  },
+  pineapple: {
+    bodyDark: "#d08a2f",
+    body: "#e8ad45",
+    groove: "#af6f22",
+    crown: "#4c9f58",
+    crownDark: "#2c7438",
+    highlight: "rgba(255, 232, 182, 0.62)",
+  },
+  banana: {
+    peelDark: "#d0b03b",
+    peel: "#f0d567",
+    underside: "#b28f26",
+    tip: "#70562e",
+    highlight: "rgba(255, 243, 176, 0.65)",
+  },
+};
 
 const OUT_CODES = {
   LEFT: 1,
@@ -882,7 +930,7 @@ class AIController {
     }
     const remaining = this.nextActionAt - now;
     const acceleratedRemaining = remaining / multiplier;
-    this.nextActionAt = now + Math.max(0.004, acceleratedRemaining);
+    this.nextActionAt = now + Math.max(this.minActionDelay() * 0.65, acceleratedRemaining);
   }
 
   applyBombPenalty(penalty) {
@@ -952,7 +1000,7 @@ class AIController {
     }
     const delay = this.reactionDelayByObject.get(obj.id) ?? 0;
     const reactionMultiplier = clamp(this.currentAdaptiveBoost.reactionMultiplier || 1, 1, 10);
-    const effectiveDelay = Math.max(0.004, delay / reactionMultiplier);
+    const effectiveDelay = Math.max(this.minReactionDelay(), delay / reactionMultiplier);
     return now - this.visibleSince.get(obj.id) >= effectiveDelay;
   }
 
@@ -964,7 +1012,27 @@ class AIController {
         : 1;
     const reactionMultiplier = clamp((adaptiveBoost && adaptiveBoost.reactionMultiplier) || 1, 1, 10);
     const hesitationScale = clamp((adaptiveBoost && adaptiveBoost.hesitationScale) || 1, 0.2, 1);
-    return Math.max(0.004, (baseDelay * catchupScale * scale * hesitationScale) / reactionMultiplier);
+    return Math.max(this.minActionDelay(), (baseDelay * catchupScale * scale * hesitationScale) / reactionMultiplier);
+  }
+
+  minReactionDelay() {
+    if (this.difficultyLevel === "hard") {
+      return 0.085;
+    }
+    if (this.difficultyLevel === "medium") {
+      return 0.11;
+    }
+    return 0.145;
+  }
+
+  minActionDelay() {
+    if (this.difficultyLevel === "hard") {
+      return 0.05;
+    }
+    if (this.difficultyLevel === "medium") {
+      return 0.075;
+    }
+    return 0.11;
   }
 
   prioritizeFruits(fruits, bombs, bounds, targetingMultiplier = 1) {
@@ -1160,7 +1228,6 @@ class GameApp {
     this.menuOverlay = document.getElementById("menu-overlay");
     this.resultOverlay = document.getElementById("result-overlay");
     this.startBtn = document.getElementById("start-btn");
-    this.installBtn = document.getElementById("install-btn");
     this.restartBtn = document.getElementById("restart-btn");
     this.backMenuBtn = document.getElementById("back-menu-btn");
     this.modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
@@ -1191,6 +1258,14 @@ class GameApp {
     this.newHighScoreAchieved = false;
 
     this.state = "menu";
+    this.roundPhase = "idle";
+    this.roundCountdownText = "";
+    this.roundStartDelayRemaining = 0;
+    this.roundCountdownStepRemaining = 0;
+    this.roundCountdownStepIndex = 0;
+    this.aiCanActAt = 0;
+    this.firstPlayableFruitAt = null;
+    this.hasSpawnedOpeningFruit = false;
     this.pendingEndReason = "";
     this.objects = [];
     this.particles = [];
@@ -1226,8 +1301,6 @@ class GameApp {
     this.humanHitStreak = 0;
     this.lastHumanHitAt = -Infinity;
     this.humanPerformanceEvents = [];
-
-    this.installPromptEvent = null;
     this.resetHumanPerformanceTracking();
 
     this.bindEvents();
@@ -1265,27 +1338,6 @@ class GameApp {
         Storage.saveSettings(this.settings);
         this.applySettingsToUI();
       });
-    });
-
-    this.installBtn.addEventListener("click", async () => {
-      if (!this.installPromptEvent) {
-        return;
-      }
-      this.installPromptEvent.prompt();
-      await this.installPromptEvent.userChoice;
-      this.installPromptEvent = null;
-      this.installBtn.classList.add("hidden");
-    });
-
-    window.addEventListener("beforeinstallprompt", (event) => {
-      event.preventDefault();
-      this.installPromptEvent = event;
-      this.installBtn.classList.remove("hidden");
-    });
-
-    window.addEventListener("appinstalled", () => {
-      this.installPromptEvent = null;
-      this.installBtn.classList.add("hidden");
     });
 
     window.addEventListener("keydown", (event) => {
@@ -1418,6 +1470,14 @@ class GameApp {
       this.settings.aiDifficulty = AI_MODE_DIFFICULTY;
     }
     this.state = "running";
+    this.roundPhase = "countdown";
+    this.roundCountdownText = "";
+    this.roundStartDelayRemaining = ROUND_FLOW.startDelaySeconds;
+    this.roundCountdownStepRemaining = ROUND_FLOW.countdownStepSeconds;
+    this.roundCountdownStepIndex = 0;
+    this.aiCanActAt = Number.POSITIVE_INFINITY;
+    this.firstPlayableFruitAt = null;
+    this.hasSpawnedOpeningFruit = false;
     this.pendingEndReason = "";
     this.newHighScoreAchieved = false;
 
@@ -1427,7 +1487,7 @@ class GameApp {
     this.skippedFruits = 0;
     this.roundTimeRemaining = GAME_CONFIG.aiRoundSeconds;
     this.elapsedTime = 0;
-    this.spawnCooldown = 0.35;
+    this.spawnCooldown = ROUND_FLOW.postCountdownSpawnDelaySeconds;
     this.spawnInterval = GAME_CONFIG.baseSpawnInterval;
     this.speedMultiplier = 1;
     this.heartSpawnCooldown = randomRange(4.5, 7);
@@ -1450,6 +1510,14 @@ class GameApp {
 
   backToMenu() {
     this.state = "menu";
+    this.roundPhase = "idle";
+    this.roundCountdownText = "";
+    this.roundStartDelayRemaining = 0;
+    this.roundCountdownStepRemaining = 0;
+    this.roundCountdownStepIndex = 0;
+    this.aiCanActAt = 0;
+    this.firstPlayableFruitAt = null;
+    this.hasSpawnedOpeningFruit = false;
     this.objects = [];
     this.particles = [];
     this.blade.reset();
@@ -1501,6 +1569,12 @@ class GameApp {
       return;
     }
 
+    if (this.roundPhase === "countdown") {
+      this.updateRoundCountdown(now, dt);
+      this.refreshHud();
+      return;
+    }
+
     if (this.mode === MODES.AI_VS_HUMAN) {
       this.roundTimeRemaining = Math.max(0, this.roundTimeRemaining - dt);
       if (this.roundTimeRemaining <= 0) {
@@ -1512,11 +1586,12 @@ class GameApp {
     this.updateDifficulty(dt);
     this.updateSpawning(dt);
     this.updateObjects(dt);
+    this.trackFirstPlayableFruit(now);
     const humanClaims = this.collectHumanSliceClaims();
     const humanPerformance =
       this.mode === MODES.AI_VS_HUMAN ? this.buildHumanPerformanceSnapshot(now) : null;
     const aiDecision =
-      this.state === "running" && this.mode === MODES.AI_VS_HUMAN
+      this.state === "running" && this.mode === MODES.AI_VS_HUMAN && this.canAiAct(now)
         ? this.aiController.decide(
             now,
             this.objects,
@@ -1534,6 +1609,75 @@ class GameApp {
     }
 
     this.refreshHud();
+  }
+
+  updateRoundCountdown(now, dt) {
+    if (this.roundPhase !== "countdown") {
+      return;
+    }
+
+    if (this.roundStartDelayRemaining > 0) {
+      this.roundStartDelayRemaining = Math.max(0, this.roundStartDelayRemaining - dt);
+      if (this.roundStartDelayRemaining > 0) {
+        this.roundCountdownText = "";
+        return;
+      }
+      this.roundCountdownText = ROUND_FLOW.countdownSequence[0];
+      this.roundCountdownStepRemaining = ROUND_FLOW.countdownStepSeconds;
+      this.roundCountdownStepIndex = 0;
+      return;
+    }
+
+    this.roundCountdownStepRemaining = Math.max(0, this.roundCountdownStepRemaining - dt);
+    if (this.roundCountdownStepRemaining > 0) {
+      return;
+    }
+
+    this.roundCountdownStepIndex += 1;
+    if (this.roundCountdownStepIndex >= ROUND_FLOW.countdownSequence.length) {
+      this.roundPhase = "active";
+      this.roundCountdownText = "";
+      this.aiCanActAt = now + ROUND_FLOW.aiOpeningLockSeconds;
+      return;
+    }
+
+    this.roundCountdownText = ROUND_FLOW.countdownSequence[this.roundCountdownStepIndex];
+    this.roundCountdownStepRemaining = ROUND_FLOW.countdownStepSeconds;
+  }
+
+  trackFirstPlayableFruit(now) {
+    if (this.mode !== MODES.AI_VS_HUMAN || this.roundPhase !== "active" || this.firstPlayableFruitAt !== null) {
+      return;
+    }
+
+    const hasVisibleFruit = this.objects.some(
+      (obj) => obj.kind === "fruit" && this.aiController.isFullyVisible(obj, this.bounds),
+    );
+    if (!hasVisibleFruit) {
+      return;
+    }
+
+    this.firstPlayableFruitAt = now;
+    this.aiCanActAt = Math.max(
+      this.aiCanActAt,
+      now + ROUND_FLOW.humanFirstReactionWindowSeconds,
+    );
+  }
+
+  canAiAct(now) {
+    if (this.mode !== MODES.AI_VS_HUMAN || this.roundPhase !== "active") {
+      return false;
+    }
+    if (now < this.aiCanActAt) {
+      return false;
+    }
+    if (
+      this.firstPlayableFruitAt !== null &&
+      now - this.firstPlayableFruitAt < ROUND_FLOW.humanFirstReactionWindowSeconds
+    ) {
+      return false;
+    }
+    return true;
   }
 
   updateDifficulty(dt) {
@@ -1590,6 +1734,9 @@ class GameApp {
   }
 
   updateSpawning(dt) {
+    if (this.roundPhase !== "active") {
+      return;
+    }
     this.heartSpawnCooldown = Math.max(0, this.heartSpawnCooldown - dt);
     this.spawnCooldown -= dt;
     if (this.spawnCooldown > 0) {
@@ -1654,6 +1801,12 @@ class GameApp {
     const baseY = this.bounds.bottom + Math.max(55, this.bounds.bottom * 0.1);
     const launch = this.buildLaunchProfile();
 
+    if (this.mode === MODES.AI_VS_HUMAN && !this.hasSpawnedOpeningFruit) {
+      this.spawnFruit(baseX, baseY, launch);
+      this.hasSpawnedOpeningFruit = true;
+      return;
+    }
+
     if (this.shouldSpawnHeart()) {
       this.spawnHeart(baseX, baseY, launch);
       return;
@@ -1713,6 +1866,9 @@ class GameApp {
   spawnFruit(x, y, launch) {
     const fruit = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
     const radius = 34 * launch.scale;
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      this.hasSpawnedOpeningFruit = true;
+    }
     this.objects.push({
       id: nextObjectId++,
       kind: "fruit",
@@ -2014,6 +2170,7 @@ class GameApp {
 
   triggerBombBlast(position, reason) {
     this.state = "bomb_blast";
+    this.roundPhase = "active";
     this.pendingEndReason = reason;
     this.blastCenter = { ...position };
     this.blastTimer = this.blastDuration;
@@ -2029,6 +2186,7 @@ class GameApp {
       return;
     }
     this.state = "result";
+    this.roundPhase = "idle";
 
     if (this.humanScore > this.highScore) {
       this.highScore = this.humanScore;
@@ -2242,14 +2400,291 @@ class GameApp {
   }
 
   drawFruit(fruit) {
-    this.ctx.fillStyle = fruit.color;
+    this.ctx.save();
+    this.drawFruitShadow(fruit);
+    switch (fruit.name) {
+      case "banana":
+        this.drawBananaFruit(fruit);
+        break;
+      case "watermelon":
+        this.drawWatermelonFruit(fruit);
+        break;
+      case "pineapple":
+        this.drawPineappleFruit(fruit);
+        break;
+      case "orange":
+        this.drawOrangeFruit(fruit);
+        break;
+      case "apple":
+      default:
+        this.drawAppleFruit(fruit);
+        break;
+    }
+    this.ctx.restore();
+  }
+
+  drawFruitShadow(fruit) {
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
     this.ctx.beginPath();
-    this.ctx.arc(fruit.x, fruit.y, fruit.radius, 0, Math.PI * 2);
+    this.ctx.ellipse(
+      fruit.x + fruit.radius * 0.12,
+      fruit.y + fruit.radius * 0.18,
+      fruit.radius * 0.9,
+      fruit.radius * 0.68,
+      0,
+      0,
+      Math.PI * 2,
+    );
     this.ctx.fill();
-    this.ctx.fillStyle = "rgba(255,255,255,0.25)";
+  }
+
+  drawAppleFruit(fruit) {
+    const style = FRUIT_STYLE.apple;
+    const r = fruit.radius;
+    const g = this.ctx.createRadialGradient(
+      fruit.x - r * 0.35,
+      fruit.y - r * 0.34,
+      r * 0.18,
+      fruit.x,
+      fruit.y,
+      r * 1.15,
+    );
+    g.addColorStop(0, style.body[1]);
+    g.addColorStop(1, style.body[0]);
+
+    this.ctx.fillStyle = style.shadow;
     this.ctx.beginPath();
-    this.ctx.arc(fruit.x - fruit.radius * 0.3, fruit.y - fruit.radius * 0.3, fruit.radius * 0.22, 0, Math.PI * 2);
+    this.ctx.ellipse(fruit.x, fruit.y + r * 0.02, r * 0.97, r * 1.02, 0, 0, Math.PI * 2);
     this.ctx.fill();
+
+    this.ctx.fillStyle = g;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x, fruit.y, r * 0.92, r * 0.98, 0, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.fillStyle = style.stem;
+    this.ctx.fillRect(fruit.x - r * 0.08, fruit.y - r * 1.02, r * 0.16, r * 0.44);
+    this.ctx.fillStyle = style.leaf;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x + r * 0.28, fruit.y - r * 0.84, r * 0.24, r * 0.13, -0.4, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.fillStyle = style.highlight;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x - r * 0.36, fruit.y - r * 0.36, r * 0.21, r * 0.16, -0.4, 0, Math.PI * 2);
+    this.ctx.fill();
+  }
+
+  drawOrangeFruit(fruit) {
+    const style = FRUIT_STYLE.orange;
+    const r = fruit.radius;
+    const g = this.ctx.createRadialGradient(
+      fruit.x - r * 0.3,
+      fruit.y - r * 0.3,
+      r * 0.2,
+      fruit.x,
+      fruit.y,
+      r,
+    );
+    g.addColorStop(0, style.body[1]);
+    g.addColorStop(1, style.body[0]);
+
+    this.ctx.fillStyle = style.shadow;
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x, fruit.y, r * 0.96, 0, Math.PI * 2);
+    this.ctx.fill();
+    this.ctx.fillStyle = g;
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x, fruit.y, r * 0.9, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.fillStyle = style.leaf;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x + r * 0.11, fruit.y - r * 0.9, r * 0.19, r * 0.1, -0.25, 0, Math.PI * 2);
+    this.ctx.fill();
+    this.ctx.fillStyle = style.stem;
+    this.ctx.fillRect(fruit.x - r * 0.03, fruit.y - r * 0.9, r * 0.06, r * 0.2);
+
+    this.ctx.fillStyle = "rgba(193, 109, 21, 0.45)";
+    const dimples = [
+      [-0.34, -0.08],
+      [-0.18, 0.21],
+      [0.2, 0.19],
+      [0.32, -0.12],
+      [0.05, -0.22],
+    ];
+    dimples.forEach(([dx, dy]) => {
+      this.ctx.beginPath();
+      this.ctx.arc(fruit.x + r * dx, fruit.y + r * dy, r * 0.08, 0, Math.PI * 2);
+      this.ctx.fill();
+    });
+
+    this.ctx.fillStyle = style.highlight;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x - r * 0.3, fruit.y - r * 0.34, r * 0.2, r * 0.14, -0.4, 0, Math.PI * 2);
+    this.ctx.fill();
+  }
+
+  drawWatermelonFruit(fruit) {
+    const style = FRUIT_STYLE.watermelon;
+    const r = fruit.radius;
+
+    this.ctx.fillStyle = style.rindDark;
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x, fruit.y, r * 0.95, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.fillStyle = style.rindMid;
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x, fruit.y, r * 0.82, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    const flesh = this.ctx.createRadialGradient(
+      fruit.x - r * 0.28,
+      fruit.y - r * 0.3,
+      r * 0.22,
+      fruit.x,
+      fruit.y,
+      r * 0.76,
+    );
+    flesh.addColorStop(0, "#f07f8d");
+    flesh.addColorStop(1, style.flesh);
+    this.ctx.fillStyle = flesh;
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x, fruit.y, r * 0.72, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    const seeds = [
+      [-0.34, -0.08],
+      [-0.1, -0.24],
+      [0.15, -0.16],
+      [0.34, -0.03],
+      [-0.18, 0.14],
+      [0.11, 0.2],
+      [0.28, 0.15],
+    ];
+    this.ctx.fillStyle = style.seed;
+    seeds.forEach(([dx, dy]) => {
+      this.ctx.beginPath();
+      this.ctx.ellipse(fruit.x + r * dx, fruit.y + r * dy, r * 0.06, r * 0.09, 0, 0, Math.PI * 2);
+      this.ctx.fill();
+    });
+
+    this.ctx.fillStyle = style.highlight;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x - r * 0.22, fruit.y - r * 0.33, r * 0.2, r * 0.12, -0.35, 0, Math.PI * 2);
+    this.ctx.fill();
+  }
+
+  drawPineappleFruit(fruit) {
+    const style = FRUIT_STYLE.pineapple;
+    const r = fruit.radius;
+
+    this.ctx.fillStyle = style.bodyDark;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x, fruit.y + r * 0.06, r * 0.75, r * 1.02, 0, 0, Math.PI * 2);
+    this.ctx.fill();
+    this.ctx.fillStyle = style.body;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x, fruit.y + r * 0.04, r * 0.66, r * 0.92, 0, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.strokeStyle = style.groove;
+    this.ctx.lineWidth = Math.max(1.5, r * 0.06);
+    for (let offset = -0.52; offset <= 0.52; offset += 0.24) {
+      this.ctx.beginPath();
+      this.ctx.moveTo(fruit.x - r * 0.55, fruit.y - r * 0.52 + r * offset);
+      this.ctx.lineTo(fruit.x + r * 0.55, fruit.y + r * 0.52 + r * offset);
+      this.ctx.stroke();
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(fruit.x + r * 0.55, fruit.y - r * 0.52 + r * offset);
+      this.ctx.lineTo(fruit.x - r * 0.55, fruit.y + r * 0.52 + r * offset);
+      this.ctx.stroke();
+    }
+
+    this.ctx.fillStyle = style.crownDark;
+    const crown = [
+      [0, -1.42],
+      [0.2, -0.74],
+      [0.04, -0.74],
+      [0.38, -1.16],
+      [0.3, -0.66],
+      [0.55, -0.94],
+      [0.47, -0.58],
+      [-0.55, -0.94],
+      [-0.3, -0.66],
+      [-0.38, -1.16],
+      [-0.04, -0.74],
+      [-0.2, -0.74],
+    ];
+    this.ctx.beginPath();
+    crown.forEach(([dx, dy], index) => {
+      const px = fruit.x + r * dx;
+      const py = fruit.y + r * dy;
+      if (index === 0) {
+        this.ctx.moveTo(px, py);
+      } else {
+        this.ctx.lineTo(px, py);
+      }
+    });
+    this.ctx.closePath();
+    this.ctx.fill();
+
+    this.ctx.fillStyle = style.crown;
+    this.ctx.beginPath();
+    this.ctx.moveTo(fruit.x, fruit.y - r * 1.3);
+    this.ctx.lineTo(fruit.x + r * 0.26, fruit.y - r * 0.74);
+    this.ctx.lineTo(fruit.x - r * 0.26, fruit.y - r * 0.74);
+    this.ctx.closePath();
+    this.ctx.fill();
+
+    this.ctx.fillStyle = style.highlight;
+    this.ctx.beginPath();
+    this.ctx.ellipse(fruit.x - r * 0.2, fruit.y - r * 0.25, r * 0.2, r * 0.14, -0.4, 0, Math.PI * 2);
+    this.ctx.fill();
+  }
+
+  drawBananaFruit(fruit) {
+    const style = FRUIT_STYLE.banana;
+    const r = fruit.radius;
+    const outerRadius = r * 0.92;
+    const innerRadius = r * 0.58;
+    const start = 0.26 * Math.PI;
+    const end = 0.96 * Math.PI;
+
+    this.ctx.strokeStyle = style.peelDark;
+    this.ctx.lineWidth = Math.max(5, r * 0.42);
+    this.ctx.lineCap = "round";
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x - r * 0.05, fruit.y + r * 0.1, outerRadius, start, end);
+    this.ctx.stroke();
+
+    this.ctx.strokeStyle = style.peel;
+    this.ctx.lineWidth = Math.max(4, r * 0.34);
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x - r * 0.05, fruit.y + r * 0.1, outerRadius, start, end);
+    this.ctx.stroke();
+
+    this.ctx.strokeStyle = style.underside;
+    this.ctx.lineWidth = Math.max(2, r * 0.14);
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x + r * 0.03, fruit.y + r * 0.03, innerRadius, start + 0.08, end - 0.08);
+    this.ctx.stroke();
+
+    this.ctx.fillStyle = style.tip;
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x - r * 0.82, fruit.y + r * 0.27, r * 0.09, 0, Math.PI * 2);
+    this.ctx.fill();
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x + r * 0.66, fruit.y - r * 0.2, r * 0.09, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.strokeStyle = style.highlight;
+    this.ctx.lineWidth = Math.max(1.5, r * 0.09);
+    this.ctx.beginPath();
+    this.ctx.arc(fruit.x - r * 0.03, fruit.y + r * 0.04, r * 0.73, start + 0.1, end - 0.2);
+    this.ctx.stroke();
   }
 
   drawBomb(bomb) {
@@ -2382,6 +2817,30 @@ class GameApp {
     this.ctx.stroke();
   }
 
+  drawCountdownOverlay() {
+    if (this.state !== "running" || this.roundPhase !== "countdown") {
+      return;
+    }
+
+    this.ctx.save();
+    this.ctx.fillStyle = "rgba(8, 14, 24, 0.36)";
+    this.ctx.fillRect(0, 0, this.bounds.right, this.bounds.bottom);
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+
+    if (this.roundCountdownText) {
+      const isStart = this.roundCountdownText === "START";
+      this.ctx.fillStyle = isStart ? "rgba(243, 255, 198, 0.95)" : "rgba(250, 252, 255, 0.96)";
+      this.ctx.font = isStart ? "800 76px 'Segoe UI', sans-serif" : "800 90px 'Segoe UI', sans-serif";
+      this.ctx.fillText(this.roundCountdownText, this.bounds.right * 0.5, this.bounds.bottom * 0.5);
+    } else {
+      this.ctx.fillStyle = "rgba(240, 247, 255, 0.92)";
+      this.ctx.font = "700 42px 'Segoe UI', sans-serif";
+      this.ctx.fillText("Get Ready", this.bounds.right * 0.5, this.bounds.bottom * 0.5);
+    }
+    this.ctx.restore();
+  }
+
   draw() {
     this.drawBackground();
     this.drawParticles();
@@ -2394,6 +2853,9 @@ class GameApp {
 
     if (this.state === "bomb_blast") {
       this.drawBombBlast();
+    }
+    if (this.state === "running" && this.roundPhase === "countdown") {
+      this.drawCountdownOverlay();
     }
   }
 
@@ -2410,8 +2872,12 @@ class GameApp {
       this.hudLives.classList.remove("hidden");
     }
     if (this.mode === MODES.AI_VS_HUMAN) {
-      const boostLabel = this.aiController.adaptiveStageLabel;
-      this.hudDifficulty.textContent = boostLabel === "x1" ? "" : `AI Boost: ${boostLabel}`;
+      if (this.roundPhase === "countdown") {
+        this.hudDifficulty.textContent = this.roundCountdownText ? `Starting: ${this.roundCountdownText}` : "Get Ready";
+      } else {
+        const boostLabel = this.aiController.adaptiveStageLabel;
+        this.hudDifficulty.textContent = boostLabel === "x1" ? "" : `AI Boost: ${boostLabel}`;
+      }
     } else {
       this.hudDifficulty.textContent = "";
     }

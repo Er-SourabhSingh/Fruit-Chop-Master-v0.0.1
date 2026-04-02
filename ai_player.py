@@ -18,6 +18,8 @@ BOOST_TARGETING_MULTIPLIER = {1: 1.0, 2: 1.25, 4: 1.65, 10: 2.3}
 BOOST_COMBO_MULTIPLIER = {1: 1.0, 2: 1.2, 4: 1.45, 10: 1.8}
 BOOST_HIT_BONUS = {1: 0.0, 2: 0.03, 4: 0.055, 10: 0.085}
 BOOST_MISTAKE_SCALE = {1: 1.0, 2: 0.66, 4: 0.42, 10: 0.18}
+MIN_REACTION_DELAY_SECONDS = {"easy": 0.16, "medium": 0.12, "hard": 0.09}
+MIN_ACTION_DELAY_SECONDS = {"easy": 0.11, "medium": 0.08, "hard": 0.06}
 
 
 @dataclass
@@ -307,14 +309,16 @@ class AIPlayer:
             return False
 
         hard_bonus = 1.08 if self._difficulty_level == "hard" else 1.0
-        effective_delay = max(0.015, reaction_delay / (self._boost_stage * hard_bonus))
+        minimum_delay = MIN_REACTION_DELAY_SECONDS.get(self._difficulty_level, 0.1)
+        effective_delay = max(minimum_delay, reaction_delay / (self._boost_stage * hard_bonus))
         return (now - visible_since) >= effective_delay
 
     def _action_delay(self, round_progress: float, scale: float) -> float:
         base_delay = self.profile.sample_reaction_delay(self.rng)
         progress_bonus = 1.0 - (round_progress * 0.16)
         hard_bonus = 0.86 if self._difficulty_level == "hard" else 0.94 if self._difficulty_level == "medium" else 1.0
-        return max(0.012, (base_delay * scale * progress_bonus * hard_bonus) / self._boost_stage)
+        minimum_delay = MIN_ACTION_DELAY_SECONDS.get(self._difficulty_level, 0.08)
+        return max(minimum_delay, (base_delay * scale * progress_bonus * hard_bonus) / self._boost_stage)
 
     def _prioritize_targets(
         self,
