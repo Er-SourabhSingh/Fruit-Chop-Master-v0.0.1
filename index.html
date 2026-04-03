@@ -4,10 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Fruit Chop" />
     <meta name="description" content="Fruit Chop Master - slice fruits in a fast arcade challenge." />
-    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="manifest" href="./manifest.json" />
     <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
-    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="512x512" href="./icons/icon-512.png" />
     <link rel="stylesheet" href="./styles.css" />
     <title>Fruit Chop Master</title>
   </head>
@@ -17,7 +21,7 @@
         <div class="hud-side">
           <p class="hud-label">Human</p>
           <p class="hud-value" id="hud-human-score">0</p>
-          <p class="hud-sub" id="hud-lives">Lives: ❤ ❤ ❤</p>
+          <p class="hud-sub" id="hud-lives">Lives: &#10084; &#10084; &#10084;</p>
         </div>
         <div class="hud-center">
           <p class="hud-label" id="hud-mode">Mode: Classic</p>
@@ -34,21 +38,47 @@
       <canvas id="game-canvas" aria-label="Fruit Chop Master game canvas"></canvas>
 
       <section id="menu-overlay" class="overlay">
-        <div class="panel">
-          <h1>Fruit Chop Master</h1>
-          <p class="panel-subtitle">Select game mode</p>
-          <div class="button-row">
-            <button class="mode-btn is-active" data-mode="classic" type="button">Classic</button>
-            <button class="mode-btn" data-mode="ai_vs_human" type="button">AI</button>
+        <div class="panel menu-panel">
+          <div class="panel-head">
+            <h1>Fruit Chop Master</h1>
+            <p class="panel-subtitle">Pick your challenge and start slicing.</p>
           </div>
-          <div class="button-column">
+
+          <div class="mode-grid" role="radiogroup" aria-label="Select game mode">
+            <button
+              class="mode-btn mode-card is-active"
+              data-mode="classic"
+              role="radio"
+              aria-checked="true"
+              type="button"
+            >
+              <span class="mode-title">Classic</span>
+              <span class="mode-detail">Endless run with lives, bombs, and high score tracking.</span>
+            </button>
+
+            <button
+              class="mode-btn mode-card"
+              data-mode="ai_vs_human"
+              role="radio"
+              aria-checked="false"
+              type="button"
+            >
+              <span class="mode-title">AI vs Human</span>
+              <span class="mode-detail">60-second duel against the AI in a fast scoring battle.</span>
+            </button>
+          </div>
+
+          <div class="button-column menu-actions">
             <button id="start-btn" class="cta-btn" type="button">Start Match</button>
+            <button id="install-btn" class="secondary-btn hidden" type="button">Install App</button>
           </div>
+
+          <p id="install-hint" class="install-hint hidden"></p>
         </div>
       </section>
 
       <section id="result-overlay" class="overlay hidden">
-        <div class="panel">
+        <div class="panel result-panel">
           <h2 id="result-title">Match Over</h2>
           <p id="result-outcome" class="result-outcome">You Win!</p>
           <div class="result-grid">

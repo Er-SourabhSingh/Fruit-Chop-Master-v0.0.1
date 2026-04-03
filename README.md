@@ -16,7 +16,7 @@ The project now also includes a browser-first Progressive Web App build:
 - Entry: `index.html`
 - Game runtime: `app.js`
 - Styles: `styles.css`
-- Manifest: `manifest.webmanifest`
+- Manifest: `manifest.json` (plus compatibility copy: `manifest.webmanifest`)
 - Service worker: `sw.js`
 - Icons: `icons/`
 
@@ -34,12 +34,23 @@ Then open:
 http://localhost:8080
 ```
 
+### Optional: High Score Bootstrap From JSON Server
+
+If you run JSON Server on port `3000`, the web app can read the latest score from `data/highscore.json` at startup and merge it with browser storage:
+
+```bash
+npx json-server --watch data/highscore.json --port 3000
+```
+
+When available, the app reads `http://localhost:3000/high_score` and keeps local storage fallback.
+
 ### PWA Features
 
 - Installable on desktop/mobile (standalone mode)
 - Offline app shell after first successful load
 - Touch + mouse slicing controls
 - Responsive canvas layout
+- Optional high-score bootstrap from JSON Server (`/high_score`)
 - Local storage persistence for:
   - high score
   - selected mode

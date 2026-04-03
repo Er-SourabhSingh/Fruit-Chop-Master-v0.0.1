@@ -12,6 +12,10 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+node_modules/
+test-results/
+playwright-report/
+*.tmp_playwright.spec.js
 
 # OS/editor noise
 .DS_Store

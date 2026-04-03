@@ -10,6 +10,15 @@ const STORAGE_KEYS = {
   SETTINGS: "fruitchop.pwa.settings",
 };
 
+const HIGH_SCORE_SYNC = {
+  timeoutMs: 1800,
+  readEndpoints: [
+    "http://127.0.0.1:3000/high_score",
+    "http://localhost:3000/high_score",
+    "./data/highscore.json",
+  ],
+};
+
 const SETTINGS_DEFAULTS = {
   mode: MODES.CLASSIC,
   aiDifficulty: "hard",
@@ -261,6 +270,81 @@ function aiComboText(hits, bonus) {
   return `AI Legendary Combo x${hits}  +${bonus}`;
 }
 
+function currentViewportHeight() {
+  if (window.visualViewport && Number.isFinite(window.visualViewport.height)) {
+    return Math.max(1, Math.floor(window.visualViewport.height));
+  }
+  return Math.max(1, Math.floor(window.innerHeight));
+}
+
+function applyViewportHeightVar() {
+  const height = currentViewportHeight();
+  document.documentElement.style.setProperty("--app-height", `${height}px`);
+  return height;
+}
+
+function isStandaloneDisplay() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+function isAppleMobilePlatform() {
+  const ua = window.navigator.userAgent.toLowerCase();
+  const touchCapableMac = ua.includes("macintosh") && "ontouchend" in window;
+  return /iphone|ipad|ipod/.test(ua) || touchCapableMac;
+}
+
+function toSafeHighScore(value) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      return null;
+    }
+    return Math.floor(value);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isNaN(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function parseHighScorePayload(payload) {
+  const direct = toSafeHighScore(payload);
+  if (direct !== null) {
+    return direct;
+  }
+  if (payload && typeof payload === "object") {
+    const fromSnakeCase = toSafeHighScore(payload.high_score);
+    if (fromSnakeCase !== null) {
+      return fromSnakeCase;
+    }
+    const fromCamelCase = toSafeHighScore(payload.highScore);
+    if (fromCamelCase !== null) {
+      return fromCamelCase;
+    }
+    const fromScore = toSafeHighScore(payload.score);
+    if (fromScore !== null) {
+      return fromScore;
+    }
+  }
+  return null;
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const timeoutMs = options.timeoutMs ?? HIGH_SCORE_SYNC.timeoutMs;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 const Storage = {
   loadSettings() {
     try {
@@ -292,8 +376,8 @@ const Storage = {
       if (!raw) {
         return 0;
       }
-      const value = Number.parseInt(raw, 10);
-      if (Number.isNaN(value) || value < 0) {
+      const value = toSafeHighScore(raw);
+      if (value === null) {
         return 0;
       }
       return value;
@@ -304,11 +388,44 @@ const Storage = {
 
   saveHighScore(score) {
     try {
-      const safeScore = Math.max(0, Math.floor(score));
+      const safeScore = toSafeHighScore(score);
+      if (safeScore === null) {
+        return;
+      }
       window.localStorage.setItem(STORAGE_KEYS.HIGH_SCORE, String(safeScore));
     } catch {
       // Ignore write failures.
     }
+  },
+
+  async syncHighScoreFromRemote(localScore = 0) {
+    const safeLocalScore = toSafeHighScore(localScore) ?? 0;
+    for (const endpoint of HIGH_SCORE_SYNC.readEndpoints) {
+      try {
+        const response = await fetchWithTimeout(endpoint, {
+          method: "GET",
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) {
+          continue;
+        }
+        const payload = await response.json();
+        const remoteScore = parseHighScorePayload(payload);
+        if (remoteScore === null) {
+          continue;
+        }
+
+        if (remoteScore > safeLocalScore) {
+          this.saveHighScore(remoteScore);
+          return remoteScore;
+        }
+        return safeLocalScore;
+      } catch {
+        // Keep trying other endpoints/fallbacks.
+      }
+    }
+    return safeLocalScore;
   },
 };
 
@@ -1222,6 +1339,7 @@ class AIController {
 
 class GameApp {
   constructor() {
+    this.appShell = document.getElementById("app-shell");
     this.canvas = document.getElementById("game-canvas");
     this.ctx = this.canvas.getContext("2d", { alpha: false });
     this.hudEl = document.getElementById("hud");
@@ -1230,6 +1348,8 @@ class GameApp {
     this.startBtn = document.getElementById("start-btn");
     this.restartBtn = document.getElementById("restart-btn");
     this.backMenuBtn = document.getElementById("back-menu-btn");
+    this.installBtn = document.getElementById("install-btn");
+    this.installHint = document.getElementById("install-hint");
     this.modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
 
     this.hudHumanScore = document.getElementById("hud-human-score");
@@ -1281,7 +1401,12 @@ class GameApp {
       y: 0,
       pressed: false,
       pointerId: null,
+      touchId: null,
+      capturedPointerId: null,
     };
+    this.hasPointerEvents = Boolean(window.PointerEvent);
+    this.deferredInstallPrompt = null;
+    this.viewportResizeFrame = null;
 
     this.humanScore = 0;
     this.aiScore = 0;
@@ -1305,28 +1430,67 @@ class GameApp {
 
     this.bindEvents();
     this.applySettingsToUI();
+    this.updateInstallUi();
+    applyViewportHeightVar();
     this.resizeCanvas();
     this.backToMenu();
+    void this.bootstrapHighScore();
     requestAnimationFrame(this.gameLoop);
   }
 
   bindEvents() {
     this.gameLoop = this.gameLoop.bind(this);
+    this.onViewportChange = this.onViewportChange.bind(this);
     this.onPointerDown = this.onPointerDown.bind(this);
     this.onPointerMove = this.onPointerMove.bind(this);
     this.onPointerUp = this.onPointerUp.bind(this);
+    this.onTouchStart = this.onTouchStart.bind(this);
+    this.onTouchMove = this.onTouchMove.bind(this);
+    this.onTouchEnd = this.onTouchEnd.bind(this);
+    this.onMouseDown = this.onMouseDown.bind(this);
+    this.onMouseMove = this.onMouseMove.bind(this);
+    this.onMouseUp = this.onMouseUp.bind(this);
+    this.onBeforeInstallPrompt = this.onBeforeInstallPrompt.bind(this);
+    this.onAppInstalled = this.onAppInstalled.bind(this);
     this.onWindowBlur = this.onWindowBlur.bind(this);
 
-    window.addEventListener("resize", () => this.resizeCanvas());
-    this.canvas.addEventListener("pointerdown", this.onPointerDown);
-    window.addEventListener("pointermove", this.onPointerMove);
-    window.addEventListener("pointerup", this.onPointerUp);
-    window.addEventListener("pointercancel", this.onPointerUp);
+    window.addEventListener("resize", this.onViewportChange);
+    window.addEventListener("orientationchange", this.onViewportChange);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", this.onViewportChange);
+      window.visualViewport.addEventListener("scroll", this.onViewportChange);
+    }
+
+    if (this.hasPointerEvents) {
+      this.canvas.addEventListener("pointerdown", this.onPointerDown);
+      this.canvas.addEventListener("pointermove", this.onPointerMove);
+      this.canvas.addEventListener("pointerup", this.onPointerUp);
+      this.canvas.addEventListener("pointercancel", this.onPointerUp);
+      this.canvas.addEventListener("pointerleave", this.onPointerUp);
+      window.addEventListener("pointerup", this.onPointerUp);
+      window.addEventListener("pointercancel", this.onPointerUp);
+    } else {
+      this.canvas.addEventListener("touchstart", this.onTouchStart, { passive: false });
+      this.canvas.addEventListener("touchmove", this.onTouchMove, { passive: false });
+      this.canvas.addEventListener("touchend", this.onTouchEnd, { passive: false });
+      this.canvas.addEventListener("touchcancel", this.onTouchEnd, { passive: false });
+      this.canvas.addEventListener("mousedown", this.onMouseDown);
+      window.addEventListener("mousemove", this.onMouseMove);
+      window.addEventListener("mouseup", this.onMouseUp);
+    }
+
     window.addEventListener("blur", this.onWindowBlur);
+    window.addEventListener("beforeinstallprompt", this.onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", this.onAppInstalled);
 
     this.startBtn.addEventListener("click", () => this.startGame());
     this.restartBtn.addEventListener("click", () => this.startGame());
     this.backMenuBtn.addEventListener("click", () => this.backToMenu());
+    if (this.installBtn) {
+      this.installBtn.addEventListener("click", () => {
+        void this.promptInstall();
+      });
+    }
 
     this.modeButtons.forEach((button) => {
       button.addEventListener("click", () => {
@@ -1361,7 +1525,20 @@ class GameApp {
 
   applySettingsToUI() {
     this.modeButtons.forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.mode === this.settings.mode);
+      const isActive = button.dataset.mode === this.settings.mode;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-checked", isActive ? "true" : "false");
+    });
+  }
+
+  onViewportChange() {
+    if (this.viewportResizeFrame !== null) {
+      cancelAnimationFrame(this.viewportResizeFrame);
+    }
+    this.viewportResizeFrame = requestAnimationFrame(() => {
+      this.viewportResizeFrame = null;
+      applyViewportHeightVar();
+      this.resizeCanvas();
     });
   }
 
@@ -1370,8 +1547,9 @@ class GameApp {
     const oldHeight = this.bounds.bottom - this.bounds.top;
 
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const width = Math.max(1, Math.floor(window.innerWidth));
-    const height = Math.max(1, Math.floor(window.innerHeight));
+    const shellRect = this.appShell.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(shellRect.width || window.innerWidth));
+    const height = Math.max(1, Math.floor(shellRect.height || currentViewportHeight()));
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
     this.canvas.width = Math.floor(width * this.dpr);
@@ -1415,8 +1593,21 @@ class GameApp {
 
   getPointFromEvent(event) {
     const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return { x: 0, y: 0 };
+    }
     const x = ((event.clientX - rect.left) / rect.width) * (this.bounds.right - this.bounds.left);
     const y = ((event.clientY - rect.top) / rect.height) * (this.bounds.bottom - this.bounds.top);
+    return { x, y };
+  }
+
+  getPointFromTouch(touch) {
+    const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return { x: 0, y: 0 };
+    }
+    const x = ((touch.clientX - rect.left) / rect.width) * (this.bounds.right - this.bounds.left);
+    const y = ((touch.clientY - rect.top) / rect.height) * (this.bounds.bottom - this.bounds.top);
     return { x, y };
   }
 
@@ -1430,6 +1621,12 @@ class GameApp {
   }
 
   onPointerDown(event) {
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+    if (event.cancelable) {
+      event.preventDefault();
+    }
     const point = this.getPointFromEvent(event);
     const isInside = this.isInsideBounds(point);
     if (!isInside) {
@@ -1438,12 +1635,24 @@ class GameApp {
     this.pointer.x = point.x;
     this.pointer.y = point.y;
     this.pointer.pointerId = event.pointerId;
+    this.pointer.touchId = null;
     this.pointer.pressed = true;
+    if (this.canvas.setPointerCapture) {
+      try {
+        this.canvas.setPointerCapture(event.pointerId);
+        this.pointer.capturedPointerId = event.pointerId;
+      } catch {
+        this.pointer.capturedPointerId = null;
+      }
+    }
   }
 
   onPointerMove(event) {
     if (this.pointer.pointerId !== event.pointerId) {
       return;
+    }
+    if (event.cancelable) {
+      event.preventDefault();
     }
     const point = this.getPointFromEvent(event);
     this.pointer.x = point.x;
@@ -1455,12 +1664,198 @@ class GameApp {
       return;
     }
     this.pointer.pressed = false;
+    if (
+      this.pointer.capturedPointerId !== null &&
+      this.canvas.releasePointerCapture &&
+      this.canvas.hasPointerCapture &&
+      this.canvas.hasPointerCapture(this.pointer.capturedPointerId)
+    ) {
+      try {
+        this.canvas.releasePointerCapture(this.pointer.capturedPointerId);
+      } catch {
+        // Ignore capture release edge cases.
+      }
+    }
+    this.pointer.capturedPointerId = null;
     this.pointer.pointerId = null;
+  }
+
+  onTouchStart(event) {
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    if (this.pointer.touchId !== null) {
+      return;
+    }
+    const touch = event.changedTouches[0];
+    if (!touch) {
+      return;
+    }
+    const point = this.getPointFromTouch(touch);
+    if (!this.isInsideBounds(point)) {
+      return;
+    }
+    this.pointer.x = point.x;
+    this.pointer.y = point.y;
+    this.pointer.touchId = touch.identifier;
+    this.pointer.pointerId = null;
+    this.pointer.capturedPointerId = null;
+    this.pointer.pressed = true;
+  }
+
+  onTouchMove(event) {
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    if (this.pointer.touchId === null) {
+      return;
+    }
+    const touch = Array.from(event.touches).find((item) => item.identifier === this.pointer.touchId);
+    if (!touch) {
+      return;
+    }
+    const point = this.getPointFromTouch(touch);
+    this.pointer.x = point.x;
+    this.pointer.y = point.y;
+  }
+
+  onTouchEnd(event) {
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    if (this.pointer.touchId === null) {
+      return;
+    }
+    const released = Array.from(event.changedTouches).some(
+      (item) => item.identifier === this.pointer.touchId,
+    );
+    if (!released) {
+      return;
+    }
+    this.pointer.pressed = false;
+    this.pointer.pointerId = null;
+    this.pointer.touchId = null;
+    this.pointer.capturedPointerId = null;
+  }
+
+  onMouseDown(event) {
+    if (event.button !== 0) {
+      return;
+    }
+    const point = this.getPointFromEvent(event);
+    if (!this.isInsideBounds(point)) {
+      return;
+    }
+    this.pointer.x = point.x;
+    this.pointer.y = point.y;
+    this.pointer.pointerId = "mouse";
+    this.pointer.touchId = null;
+    this.pointer.capturedPointerId = null;
+    this.pointer.pressed = true;
+  }
+
+  onMouseMove(event) {
+    if (this.pointer.pointerId !== "mouse") {
+      return;
+    }
+    const point = this.getPointFromEvent(event);
+    this.pointer.x = point.x;
+    this.pointer.y = point.y;
+  }
+
+  onMouseUp(event) {
+    if (event.button !== 0 || this.pointer.pointerId !== "mouse") {
+      return;
+    }
+    this.pointer.pressed = false;
+    this.pointer.pointerId = null;
+    this.pointer.capturedPointerId = null;
+  }
+
+  onBeforeInstallPrompt(event) {
+    event.preventDefault();
+    this.deferredInstallPrompt = event;
+    this.updateInstallUi("Install for full-screen play and offline launch from your home screen.");
+  }
+
+  onAppInstalled() {
+    this.deferredInstallPrompt = null;
+    this.updateInstallUi("App installed. Launch it from your home screen.");
+  }
+
+  async promptInstall() {
+    if (!this.deferredInstallPrompt || !this.installBtn) {
+      return;
+    }
+
+    this.installBtn.disabled = true;
+    try {
+      await this.deferredInstallPrompt.prompt();
+      await this.deferredInstallPrompt.userChoice;
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn("Install prompt failed:", error);
+    } finally {
+      this.deferredInstallPrompt = null;
+      this.installBtn.disabled = false;
+      this.updateInstallUi();
+    }
+  }
+
+  updateInstallUi(message = "") {
+    if (!this.installBtn || !this.installHint) {
+      return;
+    }
+
+    if (isStandaloneDisplay()) {
+      this.installBtn.classList.add("hidden");
+      this.installHint.textContent = message || "Installed app mode active.";
+      this.installHint.classList.remove("hidden");
+      return;
+    }
+
+    if (this.deferredInstallPrompt) {
+      this.installBtn.classList.remove("hidden");
+      this.installHint.textContent =
+        message || "Install for full-screen play and offline launch from your home screen.";
+      this.installHint.classList.remove("hidden");
+      return;
+    }
+
+    this.installBtn.classList.add("hidden");
+    if (isAppleMobilePlatform()) {
+      this.installHint.textContent = "On iPhone/iPad, use Share -> Add to Home Screen to install.";
+      this.installHint.classList.remove("hidden");
+      return;
+    }
+
+    if (message) {
+      this.installHint.textContent = message;
+      this.installHint.classList.remove("hidden");
+      return;
+    }
+
+    this.installHint.textContent = "";
+    this.installHint.classList.add("hidden");
   }
 
   onWindowBlur() {
     this.pointer.pressed = false;
     this.pointer.pointerId = null;
+    this.pointer.touchId = null;
+    this.pointer.capturedPointerId = null;
+  }
+
+  async bootstrapHighScore() {
+    const syncedHighScore = await Storage.syncHighScoreFromRemote(this.highScore);
+    if (syncedHighScore === this.highScore) {
+      return;
+    }
+    this.highScore = syncedHighScore;
+    this.refreshHud();
+    if (this.state === "result") {
+      this.resultHighScore.textContent = String(this.highScore);
+    }
   }
 
   startGame() {
@@ -1526,6 +1921,7 @@ class GameApp {
     this.menuOverlay.classList.remove("hidden");
     this.resultOverlay.classList.add("hidden");
     this.hudEl.classList.add("hidden");
+    this.updateInstallUi();
   }
 
   gameLoop(timestamp) {
@@ -2890,7 +3286,7 @@ function registerServiceWorker() {
     return;
   }
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch((error) => {
+    navigator.serviceWorker.register("./sw.js", { scope: "./" }).catch((error) => {
       // eslint-disable-next-line no-console
       console.warn("Service worker registration failed:", error);
     });
@@ -2898,6 +3294,7 @@ function registerServiceWorker() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  applyViewportHeightVar();
   registerServiceWorker();
   // eslint-disable-next-line no-new
   new GameApp();
