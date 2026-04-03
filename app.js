@@ -168,6 +168,15 @@ const PWA_AI_EXECUTION = {
   virtualStepSeconds: 0.016,
 };
 
+const MOBILE_PWA_AI_STAGES = [1, 2, 4, 6, 8, 10];
+
+const MOBILE_PWA_AI_ZONES = {
+  entryUpperBound: 0.35,
+  midUpperBound: 0.7,
+  zoneAAttemptChance: 0.16,
+  stageUpgradeCooldownSeconds: 2.2,
+};
+
 const AI_ADAPTIVE_STAGES = [1, 2, 4, 6, 10];
 
 const FRUIT_TYPES = [
@@ -878,46 +887,78 @@ class AIController {
     const regularFruits = reactableObjects.filter((obj) => obj.kind === "fruit");
     const hearts = reactableObjects.filter((obj) => obj.kind === "heart");
     const bombs = allowBombTargets ? reactableObjects.filter((obj) => obj.kind === "bomb") : [];
+    let candidateFruits = regularFruits;
+    let adaptiveBoostForDecision = this.currentAdaptiveBoost;
+    let zoneAOnly = false;
 
-    if (!regularFruits.length && !hearts.length && !bombs.length) {
+    if (this.pwaContinuousMode && regularFruits.length) {
+      const { zoneA, zoneB, zoneC } = this.partitionFruitsByZone(regularFruits, bounds);
+      const preferredZones = [...zoneB, ...zoneC];
+      if (preferredZones.length) {
+        candidateFruits = preferredZones;
+      } else {
+        zoneAOnly = true;
+        if (Math.random() >= MOBILE_PWA_AI_ZONES.zoneAAttemptChance) {
+          this.nextActionAt = now + Math.max(PWA_AI_EXECUTION.minRetryDelaySeconds, this.actionDelay(scoreGap, 0.9, adaptiveBoostForDecision));
+          return null;
+        }
+        candidateFruits = zoneA;
+        adaptiveBoostForDecision = {
+          ...this.currentAdaptiveBoost,
+          stageMultiplier: 1,
+          reactionMultiplier: 1,
+          targetingMultiplier: 1,
+          comboChanceMultiplier: 1,
+          hitChanceBoost: Math.min(this.currentAdaptiveBoost.hitChanceBoost || 0, 0.01),
+          hesitationScale: Math.max(0.92, this.currentAdaptiveBoost.hesitationScale || 1),
+          comboTargetBonus: 0,
+        };
+      }
+    }
+
+    if (!candidateFruits.length && !hearts.length && !bombs.length) {
       this.nextActionAt =
         now +
         (this.pwaContinuousMode
           ? PWA_AI_EXECUTION.minRetryDelaySeconds
-          : Math.min(0.1, this.actionDelay(scoreGap, 0.5, this.currentAdaptiveBoost)));
+          : Math.min(0.1, this.actionDelay(scoreGap, 0.5, adaptiveBoostForDecision)));
       return null;
     }
 
     // Adaptive pressure: score catch-up, human momentum, and round intensity.
     const pressure =
-      roundProgress * (this.profile.progressPressureBoost || 0.1) * this.currentAdaptiveBoost.targetingMultiplier;
+      roundProgress * (this.profile.progressPressureBoost || 0.1) * adaptiveBoostForDecision.targetingMultiplier;
     const catchupPressure = clamp(
       scoreGap * (this.profile.catchupAggression || 0.012),
       -0.04,
       0.14,
     );
-    const fruitHitChance = clamp(
+    let fruitHitChance = clamp(
       randomRange(...this.profile.fruitHitChanceRange) +
         pressure +
         catchupPressure +
-        this.currentAdaptiveBoost.hitChanceBoost,
+        adaptiveBoostForDecision.hitChanceBoost,
       0.2,
       0.998,
     );
-    const comboChance = clamp(
+    let comboChance = clamp(
       (randomRange(...this.profile.comboChanceRange) +
         pressure * 0.72 +
         Math.max(0, catchupPressure) * 0.6) *
-        this.currentAdaptiveBoost.comboChanceMultiplier,
+        adaptiveBoostForDecision.comboChanceMultiplier,
       0.05,
       0.99,
     );
+    if (zoneAOnly) {
+      fruitHitChance = Math.min(fruitHitChance, 0.62);
+      comboChance = Math.min(comboChance, 0.22);
+    }
 
     const prioritizedFruits = this.prioritizeFruits(
-      regularFruits,
+      candidateFruits,
       bombs,
       bounds,
-      this.currentAdaptiveBoost.targetingMultiplier,
+      adaptiveBoostForDecision.targetingMultiplier,
     );
     const prioritizedHearts = this.prioritizeHearts(hearts, bounds);
     const targets = this.pickTargets(
@@ -925,7 +966,7 @@ class AIController {
       comboChance,
       bombs,
       bounds,
-      this.currentAdaptiveBoost,
+      adaptiveBoostForDecision,
     );
     const slicedTargets = [];
     targets.forEach((target, index) => {
@@ -946,15 +987,15 @@ class AIController {
     }
 
     let bombTarget = null;
-    if (allowBombTargets && bombs.length && this.shouldMakeBombMistake(this.currentAdaptiveBoost)) {
+    if (allowBombTargets && bombs.length && this.shouldMakeBombMistake(adaptiveBoostForDecision)) {
       bombTarget = bombs[Math.floor(Math.random() * bombs.length)];
       this.spawnSlashTrail([bombTarget], false, true, bounds);
     }
 
-    this.nextActionAt = now + this.actionDelay(scoreGap, 1, this.currentAdaptiveBoost);
+    this.nextActionAt = now + this.actionDelay(scoreGap, 1, adaptiveBoostForDecision);
     if (!slicedTargets.length && !bombTarget) {
       this.nextActionAt =
-        now + Math.max(0.012, this.actionDelay(scoreGap, 0.55, this.currentAdaptiveBoost));
+        now + Math.max(0.012, this.actionDelay(scoreGap, 0.55, adaptiveBoostForDecision));
     }
 
     if (!slicedTargets.length && !bombTarget) {
@@ -979,7 +1020,8 @@ class AIController {
   }
 
   currentStageMultiplier() {
-    return AI_ADAPTIVE_STAGES[this.adaptiveStageIndex] || AI_ADAPTIVE_STAGES[0];
+    const stages = this.pwaContinuousMode ? MOBILE_PWA_AI_STAGES : AI_ADAPTIVE_STAGES;
+    return stages[this.adaptiveStageIndex] || stages[0];
   }
 
   adaptiveUpgradeCooldown(roundProgress) {
@@ -1005,6 +1047,11 @@ class AIController {
   }
 
   updateAdaptiveStage(now, roundProgress, humanPerformance) {
+    if (this.pwaContinuousMode) {
+      this.updateAdaptiveStageForPwa(now, humanPerformance);
+      return;
+    }
+
     if (this.adaptiveStageIndex >= AI_ADAPTIVE_STAGES.length - 1) {
       return;
     }
@@ -1018,6 +1065,36 @@ class AIController {
     this.nextAdaptiveUpgradeAt = now + this.adaptiveUpgradeCooldown(roundProgress);
   }
 
+  updateAdaptiveStageForPwa(now, humanPerformance) {
+    if (!humanPerformance) {
+      return;
+    }
+
+    const stages = MOBILE_PWA_AI_STAGES;
+    const maxIndex = stages.length - 1;
+    const currentStage = this.currentStageMultiplier();
+
+    if (currentStage === 10 && humanPerformance.humanScore < humanPerformance.aiScore - 10) {
+      const fallbackIndex = stages.indexOf(4);
+      this.adaptiveStageIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
+      this.nextAdaptiveUpgradeAt = now + MOBILE_PWA_AI_ZONES.stageUpgradeCooldownSeconds;
+      return;
+    }
+
+    if (humanPerformance.humanScore <= humanPerformance.aiScore) {
+      return;
+    }
+    if (this.adaptiveStageIndex >= maxIndex) {
+      return;
+    }
+    if (now < this.nextAdaptiveUpgradeAt) {
+      return;
+    }
+
+    this.adaptiveStageIndex += 1;
+    this.nextAdaptiveUpgradeAt = now + MOBILE_PWA_AI_ZONES.stageUpgradeCooldownSeconds;
+  }
+
   buildAdaptiveBoost(now, roundProgress, scoreGap, humanPerformance) {
     const base = this.defaultAdaptiveBoost();
     if (!humanPerformance) {
@@ -1026,6 +1103,19 @@ class AIController {
 
     this.updateAdaptiveStage(now, roundProgress, humanPerformance);
     const stageMultiplier = this.currentStageMultiplier();
+    if (this.pwaContinuousMode) {
+      return {
+        stageMultiplier,
+        reactionMultiplier: stageMultiplier,
+        targetingMultiplier: clamp(1 + (stageMultiplier - 1) * 0.2, 1, 3.2),
+        comboChanceMultiplier: clamp(1 + (stageMultiplier - 1) * 0.14, 1, 2.4),
+        hitChanceBoost: clamp((stageMultiplier - 1) * 0.01, 0, 0.11),
+        hesitationScale: clamp(1 - (stageMultiplier - 1) * 0.065, 0.28, 1),
+        bombMistakeScale: 1,
+        comboTargetBonus: stageMultiplier >= 10 ? 2 : stageMultiplier >= 8 ? 1 : 0,
+      };
+    }
+
     const difficultyScale =
       this.difficultyLevel === "hard" ? 1.28 : this.difficultyLevel === "medium" ? 1.05 : 0.8;
     const leadActive =
@@ -1185,6 +1275,36 @@ class AIController {
     const top = obj.y - obj.radius;
     const bottom = obj.y + obj.radius;
     return left >= bounds.left && right <= bounds.right && top >= bounds.top && bottom <= bounds.bottom;
+  }
+
+  pwaFruitZone(obj, bounds) {
+    const visibleHeight = Math.max(1, bounds.bottom - bounds.top);
+    const distanceFromBottom = clamp(bounds.bottom - obj.y, 0, visibleHeight);
+    const progressFromBottom = distanceFromBottom / visibleHeight;
+    if (progressFromBottom < MOBILE_PWA_AI_ZONES.entryUpperBound) {
+      return "A";
+    }
+    if (progressFromBottom < MOBILE_PWA_AI_ZONES.midUpperBound) {
+      return "B";
+    }
+    return "C";
+  }
+
+  partitionFruitsByZone(fruits, bounds) {
+    const zoneA = [];
+    const zoneB = [];
+    const zoneC = [];
+    fruits.forEach((fruit) => {
+      const zone = this.pwaFruitZone(fruit, bounds);
+      if (zone === "A") {
+        zoneA.push(fruit);
+      } else if (zone === "B") {
+        zoneB.push(fruit);
+      } else {
+        zoneC.push(fruit);
+      }
+    });
+    return { zoneA, zoneB, zoneC };
   }
 
   reactionReady(obj, now) {
