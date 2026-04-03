@@ -1,4 +1,4 @@
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 const APP_SHELL_CACHE = `fruit-chop-shell-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `fruit-chop-runtime-${CACHE_VERSION}`;
 
