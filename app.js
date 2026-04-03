@@ -159,6 +159,12 @@ const AI_ADAPTIVE_TRACKING = {
   },
 };
 
+const PWA_AI_EXECUTION = {
+  humanClaimWindowSeconds: 0.1,
+  reactionBoost: 1.45,
+  minRetryDelaySeconds: 0.012,
+};
+
 const AI_ADAPTIVE_STAGES = [1, 2, 4, 6, 10];
 
 const FRUIT_TYPES = [
@@ -792,6 +798,7 @@ class AIController {
     this.adaptiveStageIndex = 0;
     this.nextAdaptiveUpgradeAt = 0;
     this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
+    this.pwaContinuousMode = false;
     this.frameCompensation = 1;
     this.lastFrameDt = 1 / 60;
   }
@@ -809,6 +816,7 @@ class AIController {
     this.comboTimer = 0;
     this.statusText = "";
     this.statusTimer = 0;
+    this.pwaContinuousMode = false;
     this.adaptiveStageIndex = 0;
     this.nextAdaptiveUpgradeAt = now;
     this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
@@ -847,7 +855,10 @@ class AIController {
     scoreGap = 0,
     humanPerformance = null,
     allowBombTargets = true,
+    blockedObjectIds = null,
+    pwaContinuousMode = false,
   ) {
+    this.pwaContinuousMode = Boolean(pwaContinuousMode);
     this.currentAdaptiveBoost = this.buildAdaptiveBoost(now, roundProgress, scoreGap, humanPerformance);
     this.pullActionForward(now, this.currentAdaptiveBoost);
     this.syncVisibility(now, objects, bounds);
@@ -855,9 +866,12 @@ class AIController {
       return null;
     }
 
-    const reactableObjects = objects.filter(
-      (obj) => this.isSliceableVisible(obj, bounds) && this.reactionReady(obj, now),
-    );
+    const reactableObjects = objects.filter((obj) => {
+      if (blockedObjectIds && blockedObjectIds.has(obj.id)) {
+        return false;
+      }
+      return this.isSliceableVisible(obj, bounds) && this.reactionReady(obj, now);
+    });
 
     const regularFruits = reactableObjects.filter((obj) => obj.kind === "fruit");
     const hearts = reactableObjects.filter((obj) => obj.kind === "heart");
@@ -865,7 +879,10 @@ class AIController {
 
     if (!regularFruits.length && !hearts.length && !bombs.length) {
       this.nextActionAt =
-        now + Math.min(0.1, this.actionDelay(scoreGap, 0.5, this.currentAdaptiveBoost));
+        now +
+        (this.pwaContinuousMode
+          ? PWA_AI_EXECUTION.minRetryDelaySeconds
+          : Math.min(0.1, this.actionDelay(scoreGap, 0.5, this.currentAdaptiveBoost)));
       return null;
     }
 
@@ -1174,7 +1191,8 @@ class AIController {
     }
     const delay = this.reactionDelayByObject.get(obj.id) ?? 0;
     const frameScale = clamp(this.frameCompensation || 1, 1, 2.6);
-    const reactionMultiplier = clamp(this.currentAdaptiveBoost.reactionMultiplier || 1, 1, 10);
+    const reactionBoost = this.pwaContinuousMode ? PWA_AI_EXECUTION.reactionBoost : 1;
+    const reactionMultiplier = clamp((this.currentAdaptiveBoost.reactionMultiplier || 1) * reactionBoost, 1, 10);
     const effectiveDelay = Math.max(
       this.minReactionDelay() / frameScale,
       delay / (reactionMultiplier * frameScale),
@@ -1189,15 +1207,20 @@ class AIController {
         ? clamp(1 - scoreGap * (this.profile.catchupReactionScale || 0.02), 0.55, 1)
         : 1;
     const frameScale = clamp(this.frameCompensation || 1, 1, 2.6);
-    const reactionMultiplier = clamp((adaptiveBoost && adaptiveBoost.reactionMultiplier) || 1, 1, 10);
+    const reactionBoost = this.pwaContinuousMode ? PWA_AI_EXECUTION.reactionBoost : 1;
+    const reactionMultiplier = clamp(((adaptiveBoost && adaptiveBoost.reactionMultiplier) || 1) * reactionBoost, 1, 10);
     const hesitationScale = clamp((adaptiveBoost && adaptiveBoost.hesitationScale) || 1, 0.2, 1);
+    const pwaActionScale = this.pwaContinuousMode ? 0.75 : 1;
     return Math.max(
       this.minActionDelay() / frameScale,
-      (baseDelay * catchupScale * scale * hesitationScale) / (reactionMultiplier * frameScale),
+      (baseDelay * catchupScale * scale * hesitationScale * pwaActionScale) / (reactionMultiplier * frameScale),
     );
   }
 
   minReactionDelay() {
+    if (this.pwaContinuousMode) {
+      return 0.018;
+    }
     if (this.difficultyLevel === "hard") {
       return 0.055;
     }
@@ -1208,6 +1231,9 @@ class AIController {
   }
 
   minActionDelay() {
+    if (this.pwaContinuousMode) {
+      return 0.01;
+    }
     if (this.difficultyLevel === "hard") {
       return 0.03;
     }
@@ -2089,7 +2115,10 @@ class GameApp {
     this.updateSpawning(dt);
     this.updateObjects(dt);
     this.trackFirstPlayableFruit(now);
-    const humanClaims = this.collectHumanSliceClaims();
+    const pwaAiContinuousMode = this.mode === MODES.AI_VS_HUMAN && isStandaloneDisplay();
+    const humanClaims = this.collectHumanSliceClaims(now, pwaAiContinuousMode);
+    const blockedObjectIds =
+      pwaAiContinuousMode && humanClaims.size ? new Set(humanClaims.keys()) : null;
     const humanPerformance =
       this.mode === MODES.AI_VS_HUMAN ? this.buildHumanPerformanceSnapshot(now) : null;
     const aiDecision =
@@ -2102,6 +2131,8 @@ class GameApp {
             this.humanScore - this.aiScore,
             humanPerformance,
             false,
+            blockedObjectIds,
+            pwaAiContinuousMode,
           )
         : null;
     this.resolveSliceClaims(now, humanClaims, aiDecision);
@@ -2449,7 +2480,7 @@ class GameApp {
     });
   }
 
-  collectHumanSliceClaims() {
+  collectHumanSliceClaims(now = 0, pwaAiContinuousMode = false) {
     const timedSegments = this.blade.getTimedSegments(this.bounds);
     const claims = new Map();
     if (!timedSegments.length) {
@@ -2457,6 +2488,13 @@ class GameApp {
     }
 
     timedSegments.forEach((segment, segmentIndex) => {
+      if (
+        pwaAiContinuousMode &&
+        now > 0 &&
+        now - segment.time > PWA_AI_EXECUTION.humanClaimWindowSeconds
+      ) {
+        return;
+      }
       this.objects.forEach((obj) => {
         const collided = lineCircleCollision(
           segment.start,
