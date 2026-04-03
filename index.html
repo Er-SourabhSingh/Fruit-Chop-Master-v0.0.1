@@ -17,21 +17,22 @@
   </head>
   <body>
     <div id="app-shell">
-      <header id="hud" class="hud hidden">
-        <div class="hud-side">
+      <header id="hud" class="hud hud--classic hidden">
+        <div id="hud-human-section" class="hud-side hud-human-section">
           <p class="hud-label">Human</p>
           <p class="hud-value" id="hud-human-score">0</p>
           <p class="hud-sub" id="hud-lives">Lives: &#10084; &#10084; &#10084;</p>
         </div>
-        <div class="hud-center">
+        <div id="hud-center-section" class="hud-center">
           <p class="hud-label" id="hud-mode">Mode: Classic</p>
           <p class="hud-timer" id="hud-timer">00:00</p>
           <p class="hud-sub" id="hud-difficulty"></p>
+          <p class="hud-sub hud-best" id="hud-high-score">Best: 0</p>
         </div>
-        <div class="hud-side hud-side-right">
+        <div id="hud-ai-section" class="hud-side hud-side-right hidden">
           <p class="hud-label">AI</p>
           <p class="hud-value" id="hud-ai-score">0</p>
-          <p class="hud-sub" id="hud-high-score">Best: 0</p>
+          <p class="hud-sub" id="hud-ai-status"></p>
         </div>
       </header>
 

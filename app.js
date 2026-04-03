@@ -1354,6 +1354,8 @@ class GameApp {
 
     this.hudHumanScore = document.getElementById("hud-human-score");
     this.hudAiScore = document.getElementById("hud-ai-score");
+    this.hudAiSection = document.getElementById("hud-ai-section");
+    this.hudAiStatus = document.getElementById("hud-ai-status");
     this.hudMode = document.getElementById("hud-mode");
     this.hudTimer = document.getElementById("hud-timer");
     this.hudLives = document.getElementById("hud-lives");
@@ -1405,6 +1407,8 @@ class GameApp {
       capturedPointerId: null,
     };
     this.hasPointerEvents = Boolean(window.PointerEvent);
+    this.isCoarsePointer = window.matchMedia("(pointer: coarse)").matches || window.navigator.maxTouchPoints > 0;
+    this.renderFruitShadows = true;
     this.deferredInstallPrompt = null;
     this.viewportResizeFrame = null;
 
@@ -1430,6 +1434,7 @@ class GameApp {
 
     this.bindEvents();
     this.applySettingsToUI();
+    this.updateHudLayout();
     this.updateInstallUi();
     applyViewportHeightVar();
     this.resizeCanvas();
@@ -1501,6 +1506,7 @@ class GameApp {
         this.aiController.setDifficulty(AI_MODE_DIFFICULTY);
         Storage.saveSettings(this.settings);
         this.applySettingsToUI();
+        this.updateHudLayout();
       });
     });
 
@@ -1531,6 +1537,23 @@ class GameApp {
     });
   }
 
+  updateHudLayout() {
+    const aiMode = this.mode === MODES.AI_VS_HUMAN;
+    this.hudEl.classList.toggle("hud--ai", aiMode);
+    this.hudEl.classList.toggle("hud--classic", !aiMode);
+    if (this.hudAiSection) {
+      this.hudAiSection.classList.toggle("hidden", !aiMode);
+    }
+  }
+
+  shouldRenderFruitShadows(width, height) {
+    const shortEdge = Math.min(width, height);
+    if (this.isCoarsePointer && shortEdge <= 920) {
+      return false;
+    }
+    return true;
+  }
+
   onViewportChange() {
     if (this.viewportResizeFrame !== null) {
       cancelAnimationFrame(this.viewportResizeFrame);
@@ -1558,6 +1581,7 @@ class GameApp {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     this.ctx.imageSmoothingEnabled = true;
     this.bounds = { left: 0, top: 0, right: width, bottom: height };
+    this.renderFruitShadows = this.shouldRenderFruitShadows(width, height);
 
     const newWidth = width;
     const newHeight = height;
@@ -1898,6 +1922,7 @@ class GameApp {
     this.aiController.setDifficulty(AI_MODE_DIFFICULTY);
     this.aiController.reset(now);
 
+    this.updateHudLayout();
     this.menuOverlay.classList.add("hidden");
     this.resultOverlay.classList.add("hidden");
     this.hudEl.classList.remove("hidden");
@@ -1918,6 +1943,7 @@ class GameApp {
     this.blade.reset();
     this.resetHumanPerformanceTracking();
     this.pendingEndReason = "";
+    this.updateHudLayout();
     this.menuOverlay.classList.remove("hidden");
     this.resultOverlay.classList.add("hidden");
     this.hudEl.classList.add("hidden");
@@ -1976,6 +2002,11 @@ class GameApp {
       if (this.roundTimeRemaining <= 0) {
         this.finishGame("time_up");
         return;
+      }
+
+      // Bombs are fully disabled in AI mode across all platforms.
+      if (this.objects.some((obj) => obj.kind === "bomb")) {
+        this.objects = this.objects.filter((obj) => obj.kind !== "bomb");
       }
     }
 
@@ -2197,9 +2228,11 @@ class GameApp {
     const baseY = this.bounds.bottom + Math.max(55, this.bounds.bottom * 0.1);
     const launch = this.buildLaunchProfile();
 
-    if (this.mode === MODES.AI_VS_HUMAN && !this.hasSpawnedOpeningFruit) {
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      if (!this.hasSpawnedOpeningFruit) {
+        this.hasSpawnedOpeningFruit = true;
+      }
       this.spawnFruit(baseX, baseY, launch);
-      this.hasSpawnedOpeningFruit = true;
       return;
     }
 
@@ -2208,15 +2241,8 @@ class GameApp {
       return;
     }
 
-    let bombChance = 0.1;
-    if (this.mode === MODES.AI_VS_HUMAN) {
-      const progress = this.roundProgress();
-      const difficultyBombOffset = 0.02;
-      bombChance = clamp(0.08 + progress * 0.12 + difficultyBombOffset, 0.08, 0.24);
-    } else {
-      const progressScore = this.humanScore;
-      bombChance = Math.min(0.24, 0.1 + progressScore * 0.0018);
-    }
+    const progressScore = this.humanScore;
+    const bombChance = Math.min(0.24, 0.1 + progressScore * 0.0018);
     if (Math.random() < bombChance) {
       this.spawnBomb(baseX, baseY, launch);
       return;
@@ -2516,7 +2542,7 @@ class GameApp {
       }
     }
 
-    if (aiBombHits > 0) {
+    if (aiBombHits > 0 && this.mode !== MODES.AI_VS_HUMAN) {
       for (let i = 0; i < aiBombHits; i += 1) {
         const penalty = this.aiController.applyBombPenalty(GAME_CONFIG.aiBombPenalty);
         this.aiScore = Math.max(0, this.aiScore - penalty);
@@ -2797,7 +2823,9 @@ class GameApp {
 
   drawFruit(fruit) {
     this.ctx.save();
-    this.drawFruitShadow(fruit);
+    if (this.renderFruitShadows) {
+      this.drawFruitShadow(fruit);
+    }
     switch (fruit.name) {
       case "banana":
         this.drawBananaFruit(fruit);
@@ -2820,13 +2848,17 @@ class GameApp {
   }
 
   drawFruitShadow(fruit) {
-    this.ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
+    const speedFactor = clamp(Math.abs(fruit.vy) / 1200, 0, 0.25);
+    const radiusX = Math.max(2, fruit.radius * (0.72 - speedFactor * 0.2));
+    const radiusY = Math.max(1.8, fruit.radius * (0.48 - speedFactor * 0.08));
+    const yOffset = fruit.radius * (0.2 + speedFactor * 0.16);
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0.14)";
     this.ctx.beginPath();
     this.ctx.ellipse(
-      fruit.x + fruit.radius * 0.12,
-      fruit.y + fruit.radius * 0.18,
-      fruit.radius * 0.9,
-      fruit.radius * 0.68,
+      fruit.x,
+      fruit.y + yOffset,
+      radiusX,
+      radiusY,
       0,
       0,
       Math.PI * 2,
@@ -3219,21 +3251,8 @@ class GameApp {
     }
 
     this.ctx.save();
-    this.ctx.fillStyle = "rgba(8, 14, 24, 0.36)";
+    this.ctx.fillStyle = "rgba(8, 14, 24, 0.22)";
     this.ctx.fillRect(0, 0, this.bounds.right, this.bounds.bottom);
-    this.ctx.textAlign = "center";
-    this.ctx.textBaseline = "middle";
-
-    if (this.roundCountdownText) {
-      const isStart = this.roundCountdownText === "START";
-      this.ctx.fillStyle = isStart ? "rgba(243, 255, 198, 0.95)" : "rgba(250, 252, 255, 0.96)";
-      this.ctx.font = isStart ? "800 76px 'Segoe UI', sans-serif" : "800 90px 'Segoe UI', sans-serif";
-      this.ctx.fillText(this.roundCountdownText, this.bounds.right * 0.5, this.bounds.bottom * 0.5);
-    } else {
-      this.ctx.fillStyle = "rgba(240, 247, 255, 0.92)";
-      this.ctx.font = "700 42px 'Segoe UI', sans-serif";
-      this.ctx.fillText("Get Ready", this.bounds.right * 0.5, this.bounds.bottom * 0.5);
-    }
     this.ctx.restore();
   }
 
@@ -3245,7 +3264,6 @@ class GameApp {
       this.aiController.draw(this.ctx, this.bounds);
     }
     this.blade.draw(this.ctx, this.bounds);
-    this.drawFloatingTexts();
 
     if (this.state === "bomb_blast") {
       this.drawBombBlast();
@@ -3256,10 +3274,12 @@ class GameApp {
   }
 
   refreshHud() {
+    this.updateHudLayout();
     this.hudHumanScore.textContent = String(this.humanScore);
-    this.hudAiScore.textContent = this.mode === MODES.AI_VS_HUMAN ? String(this.aiScore) : "-";
-    this.hudMode.textContent = this.mode === MODES.AI_VS_HUMAN ? "Mode: AI" : "Mode: Classic";
-    this.hudTimer.textContent = this.mode === MODES.AI_VS_HUMAN ? formatTime(this.roundTimeRemaining) : "--:--";
+    this.hudAiScore.textContent = String(this.aiScore);
+    this.hudMode.textContent = this.mode === MODES.AI_VS_HUMAN ? "Mode: AI vs Human" : "Mode: Classic";
+    this.hudTimer.textContent = this.mode === MODES.AI_VS_HUMAN ? formatTime(this.roundTimeRemaining) : "Arcade";
+
     if (this.mode === MODES.AI_VS_HUMAN) {
       this.hudLives.textContent = "";
       this.hudLives.classList.add("hidden");
@@ -3267,16 +3287,30 @@ class GameApp {
       this.hudLives.textContent = `Lives: ${this.lives}`;
       this.hudLives.classList.remove("hidden");
     }
+
     if (this.mode === MODES.AI_VS_HUMAN) {
       if (this.roundPhase === "countdown") {
         this.hudDifficulty.textContent = this.roundCountdownText ? `Starting: ${this.roundCountdownText}` : "Get Ready";
       } else {
         const boostLabel = this.aiController.adaptiveStageLabel;
-        this.hudDifficulty.textContent = boostLabel === "x1" ? "" : `AI Boost: ${boostLabel}`;
+        this.hudDifficulty.textContent = boostLabel === "x1" ? "Keep Slicing" : `AI Boost: ${boostLabel}`;
+      }
+      if (this.hudAiStatus) {
+        if (this.aiController.statusTimer > 0 && this.aiController.statusText) {
+          this.hudAiStatus.textContent = this.aiController.statusText;
+        } else if (this.aiController.comboTimer > 0 && this.aiController.comboText) {
+          this.hudAiStatus.textContent = this.aiController.comboText;
+        } else {
+          this.hudAiStatus.textContent = "";
+        }
       }
     } else {
-      this.hudDifficulty.textContent = "";
+      this.hudDifficulty.textContent = this.humanComboTimer > 0 ? this.humanComboText : "Slice fruits, avoid bombs";
+      if (this.hudAiStatus) {
+        this.hudAiStatus.textContent = "";
+      }
     }
+
     this.hudHighScore.textContent = `Best: ${this.highScore}`;
   }
 }
@@ -3296,6 +3330,5 @@ function registerServiceWorker() {
 window.addEventListener("DOMContentLoaded", () => {
   applyViewportHeightVar();
   registerServiceWorker();
-  // eslint-disable-next-line no-new
-  new GameApp();
+  window.__fruitChopApp = new GameApp();
 });
