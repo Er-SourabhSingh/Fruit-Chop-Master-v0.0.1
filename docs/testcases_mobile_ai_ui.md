@@ -1,57 +1,56 @@
-# Mobile UI + AI Mode Fix Test Cases
+# Mobile UI + AI Mode Rework Test Cases
 
 ## Execution Summary
 - Date: April 3, 2026 (Asia/Calcutta)
-- Scope: Mobile UI cleanup, AI HUD placement, mode visibility logic, fruit shadow behavior, AI-mode bomb removal
-- Test environment:
+- Scope: Full rework for mobile HUD, fruit-shadow removal on phone contexts, and complete bomb removal in AI mode
+- Commit under validation: local working tree before commit
+- Test stack:
   - Local server: `python -m http.server 8080 --bind 127.0.0.1`
-  - Automated runner: Playwright Chromium
+  - Playwright Chromium automation
   - Desktop viewport: `1366x768`
-  - Mobile emulation: `iPhone 13`
-  - Standalone/PWA approximation: display-mode standalone context
-- Overall result: `PASS`
+  - Mobile viewport: `iPhone 13` emulation (portrait)
+  - Installed-app/PWA simulation: standalone display-mode context
+- Final automated result: `PASS`
+- Reference metrics from run:
+  - Classic desktop score after swipes: `6`
+  - Classic mobile score after touch swipes: `3`
+  - AI mode max bomb count (desktop/mobile/standalone): `0/0/0`
 
-## 1. Mobile UI Test Cases
-| ID | Test Case | Steps | Expected Result | Actual Result | Status |
+## A. Mobile Shadow Check
+| ID | Test Case | Steps | Expected | Actual | Status |
 | --- | --- | --- | --- | --- | --- |
-| MUI-01 | Human score visible at top | Start Classic mode on mobile | Human HUD appears only in top area | Human section stayed in top HUD container | PASS |
-| MUI-02 | AI score visible at top in AI mode | Start AI vs Human mode on mobile | AI score appears in top HUD | AI section was visible at top only | PASS |
-| MUI-03 | No center score/status text | Run gameplay for several seconds | No floating score/status text in play area | Floating text draw calls stayed `0` | PASS |
-| MUI-04 | Text readability on phone | Inspect score font sizes and contrast on mobile HUD | Text is readable and not faded | Score font size and contrast passed checks | PASS |
-| MUI-05 | No overlap/overflow | Run Classic and AI mode on mobile | No horizontal overflow or overlap | Overflow check passed in both modes | PASS |
+| SH-01 | Mobile shadow disabled | Start Classic mode on mobile and inspect render flag | Fruit shadows disabled on phone context | `renderFruitShadows=false` | PASS |
+| SH-02 | No shadow draw calls on mobile | Sample recent frames while fruits spawn and slice | No detached/duplicate fruit-shadow layer | Total mobile shadow draw calls = `0` | PASS |
+| SH-03 | Standalone/PWA shadow disabled | Start AI mode in standalone context | No mobile-style shadow artifact in installed app/PWA | `renderFruitShadows=false` in standalone | PASS |
 
-## 2. Mode Visibility Test Cases
-| ID | Test Case | Steps | Expected Result | Actual Result | Status |
+## B. HUD Top Layout Check
+| ID | Test Case | Steps | Expected | Actual | Status |
 | --- | --- | --- | --- | --- | --- |
-| MODE-01 | AI section hidden in Classic mode | Launch Classic mode | No AI label/score/empty placeholder in HUD | AI section hidden (`hidden` class + classic layout) | PASS |
-| MODE-02 | AI section shown in AI mode | Launch AI vs Human mode | AI label and AI score visible | AI section visible with AI layout class | PASS |
-| MODE-03 | Mode-specific HUD layout switching | Switch modes from menu and relaunch | HUD layout updates cleanly per mode | `hud--classic`/`hud--ai` toggled correctly | PASS |
+| HUD-01 | Human HUD top-left (Classic desktop) | Start Classic desktop mode | Human score/lives block at top-left | Human block stayed in top-left bounds | PASS |
+| HUD-02 | Human HUD top-left (Classic mobile) | Start Classic mobile mode | Human block remains top-left on portrait phone | Human block stayed top-left and in viewport | PASS |
+| HUD-03 | AI HUD top-right (AI desktop) | Start AI desktop mode | AI score/status appears top-right | AI block stayed top-right | PASS |
+| HUD-04 | AI HUD top-right (AI mobile) | Start AI mobile mode | AI score/status appears top-right | AI block stayed top-right | PASS |
+| HUD-05 | No center gameplay text | Run Classic + AI and inspect HUD/canvas text paths | No score/status labels drawn in center gameplay area | Center HUD hidden + floating text draw calls = `0` | PASS |
+| HUD-06 | Classic mode hides AI HUD | Start Classic mode | No AI label/score section | AI section hidden in Classic | PASS |
 
-## 3. Fruit Rendering Test Cases
-| ID | Test Case | Steps | Expected Result | Actual Result | Status |
+## C. Bomb Removal in AI Mode
+| ID | Test Case | Steps | Expected | Actual | Status |
 | --- | --- | --- | --- | --- | --- |
-| FRUIT-01 | No detached/duplicate shadows on desktop | Play Classic mode desktop and sample frame draw counts | Max one shadow per fruit draw | Shadow-to-fruit draw count stayed 1:1 | PASS |
-| FRUIT-02 | Mobile shadow artifact prevention | Play Classic mode on mobile | No detached or floating shadows on mobile | Mobile shadow rendering disabled (`renderFruitShadows=false`) | PASS |
-| FRUIT-03 | Fruit visuals remain stable | Run repeated swipes desktop/mobile | Fruit rendering remains correct | Fruit visuals remained stable in both contexts | PASS |
+| BOMB-01 | No bomb spawn in AI desktop | Run AI mode 18s while polling objects | Bombs never created | Max bomb count = `0` | PASS |
+| BOMB-02 | No bomb spawn in AI mobile browser | Run AI mode 18s on mobile emulation | Bombs never created | Max bomb count = `0` | PASS |
+| BOMB-03 | No bomb spawn in AI standalone app context | Run AI mode 15s in standalone mode | Bombs never created | Max bomb count = `0` | PASS |
+| BOMB-04 | No AI bomb penalty in AI mode | Monitor AI status text during AI rounds | No bomb-mistake penalty text | No `Mistake` status observed | PASS |
 
-## 4. AI Mode Bomb Test Cases
-| ID | Test Case | Steps | Expected Result | Actual Result | Status |
+## D. Platform + Regression Check
+| ID | Test Case | Steps | Expected | Actual | Status |
 | --- | --- | --- | --- | --- | --- |
-| BOMB-01 | No bombs in AI mode (desktop browser) | Run AI mode for 18s and poll object list | Bomb count always zero | `maxBombs=0` | PASS |
-| BOMB-02 | No bombs in AI mode (mobile browser) | Run AI mode for 18s on mobile emulation | Bomb count always zero | `maxBombs=0` | PASS |
-| BOMB-03 | No bombs in AI mode (PWA/standalone style) | Run AI mode for 15s in standalone context | Bomb count always zero | `maxBombs=0` | PASS |
-| BOMB-04 | No AI bomb penalty/status from bombs | Run AI mode and monitor HUD/logic | No bomb penalty triggered | No bomb objects/penalties observed | PASS |
-
-## 5. Regression Test Cases
-| ID | Test Case | Steps | Expected Result | Actual Result | Status |
-| --- | --- | --- | --- | --- | --- |
-| REG-01 | Classic mode still playable | Start Classic and perform slices (desktop/mobile) | Human score updates correctly | Desktop score `4`, mobile score `18` | PASS |
-| REG-02 | Touch input still works | Perform repeated touch swipes on mobile | Slices register and score changes | Touch interactions remained functional | PASS |
-| REG-03 | AI mode still playable | Launch AI mode and let round run | AI mode runs with top HUD | Gameplay loop stable with AI scoring | PASS |
-| REG-04 | PWA launch prerequisites intact | Validate manifest + service worker in standalone context | PWA opens with standalone-ready config | Manifest/SW checks passed | PASS |
-| REG-05 | PWA offline shell still opens | Load once online, switch offline, reload | Menu + canvas still available offline | Offline reload kept menu and canvas visible | PASS |
+| REG-01 | Classic desktop gameplay | Slice fruits repeatedly | Score increases; desktop flow intact | Score increased to `6` | PASS |
+| REG-02 | Classic mobile gameplay | Swipe touch repeatedly | Score increases; touch intact | Score increased to `3` | PASS |
+| REG-03 | AI desktop gameplay | Start AI mode and run active round | AI gameplay stable with top HUD | Stable run with no bomb objects | PASS |
+| REG-04 | AI mobile gameplay | Start AI mode on mobile portrait | AI gameplay stable with top HUD | Stable run with no bomb objects | PASS |
+| REG-05 | PWA prerequisites | Validate manifest + SW in standalone context | Installable standalone configuration | Manifest + SW checks passed | PASS |
+| REG-06 | Offline standalone/PWA shell | Load online once, then reload offline | Menu + canvas available offline | Offline menu + canvas present | PASS |
 
 ## Notes
-- AI mode bombs are disabled at spawn level and actively filtered during AI rounds to prevent cross-context leakage.
-- In-canvas floating score/status text is disabled so score/mode/status data remains in the top HUD only.
-- Mobile fruit shadow artifacts are prevented by disabling fruit-shadow rendering on small coarse-pointer viewports.
+- Rework explicitly removes AI-mode bomb creation and AI bomb-target decision path, then additionally filters any unexpected bomb object during AI rounds as a safety guard.
+- Center HUD container remains in DOM for compatibility but is intentionally hidden during gameplay to keep score/status information strictly in top left/right HUD blocks.

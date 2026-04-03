@@ -824,7 +824,15 @@ class AIController {
     }
   }
 
-  decide(now, objects, bounds, roundProgress, scoreGap = 0, humanPerformance = null) {
+  decide(
+    now,
+    objects,
+    bounds,
+    roundProgress,
+    scoreGap = 0,
+    humanPerformance = null,
+    allowBombTargets = true,
+  ) {
     this.currentAdaptiveBoost = this.buildAdaptiveBoost(roundProgress, scoreGap, humanPerformance);
     this.pullActionForward(now, this.currentAdaptiveBoost);
     this.syncVisibility(now, objects, bounds);
@@ -838,7 +846,7 @@ class AIController {
 
     const regularFruits = reactableObjects.filter((obj) => obj.kind === "fruit");
     const hearts = reactableObjects.filter((obj) => obj.kind === "heart");
-    const bombs = reactableObjects.filter((obj) => obj.kind === "bomb");
+    const bombs = allowBombTargets ? reactableObjects.filter((obj) => obj.kind === "bomb") : [];
 
     if (!regularFruits.length && !hearts.length && !bombs.length) {
       this.nextActionAt =
@@ -904,7 +912,7 @@ class AIController {
     }
 
     let bombTarget = null;
-    if (bombs.length && this.shouldMakeBombMistake(this.currentAdaptiveBoost)) {
+    if (allowBombTargets && bombs.length && this.shouldMakeBombMistake(this.currentAdaptiveBoost)) {
       bombTarget = bombs[Math.floor(Math.random() * bombs.length)];
       this.spawnSlashTrail([bombTarget], false, true, bounds);
     }
@@ -1353,9 +1361,12 @@ class GameApp {
     this.modeButtons = Array.from(document.querySelectorAll(".mode-btn"));
 
     this.hudHumanScore = document.getElementById("hud-human-score");
+    this.hudHumanLabel = document.getElementById("hud-human-label");
     this.hudAiScore = document.getElementById("hud-ai-score");
+    this.hudAiLabel = document.getElementById("hud-ai-label");
     this.hudAiSection = document.getElementById("hud-ai-section");
     this.hudAiStatus = document.getElementById("hud-ai-status");
+    this.hudCenterSection = document.getElementById("hud-center-section");
     this.hudMode = document.getElementById("hud-mode");
     this.hudTimer = document.getElementById("hud-timer");
     this.hudLives = document.getElementById("hud-lives");
@@ -1544,11 +1555,19 @@ class GameApp {
     if (this.hudAiSection) {
       this.hudAiSection.classList.toggle("hidden", !aiMode);
     }
+    if (this.hudCenterSection) {
+      this.hudCenterSection.classList.add("hidden");
+    }
+    if (this.hudHumanLabel) {
+      this.hudHumanLabel.textContent = aiMode ? "Human" : "Player";
+    }
+    if (this.hudAiLabel) {
+      this.hudAiLabel.textContent = "AI";
+    }
   }
 
   shouldRenderFruitShadows(width, height) {
-    const shortEdge = Math.min(width, height);
-    if (this.isCoarsePointer && shortEdge <= 920) {
+    if (this.isCoarsePointer || isStandaloneDisplay()) {
       return false;
     }
     return true;
@@ -2026,6 +2045,7 @@ class GameApp {
             this.roundProgress(),
             this.humanScore - this.aiScore,
             humanPerformance,
+            false,
           )
         : null;
     this.resolveSliceClaims(now, humanClaims, aiDecision);
@@ -2486,6 +2506,10 @@ class GameApp {
       removeIds.add(obj.id);
       if (winner.owner === "human") {
         if (obj.kind === "bomb") {
+          if (this.mode === MODES.AI_VS_HUMAN) {
+            this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#ff8f8f");
+            continue;
+          }
           this.triggerBombBlast({ x: obj.x, y: obj.y }, "human_bomb");
           return;
         }
@@ -2501,6 +2525,9 @@ class GameApp {
       }
 
       if (obj.kind === "bomb") {
+        if (this.mode === MODES.AI_VS_HUMAN) {
+          continue;
+        }
         aiBombHits += 1;
         this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#ff7373");
         this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#ff7373");
@@ -2880,10 +2907,12 @@ class GameApp {
     g.addColorStop(0, style.body[1]);
     g.addColorStop(1, style.body[0]);
 
-    this.ctx.fillStyle = style.shadow;
-    this.ctx.beginPath();
-    this.ctx.ellipse(fruit.x, fruit.y + r * 0.02, r * 0.97, r * 1.02, 0, 0, Math.PI * 2);
-    this.ctx.fill();
+    if (this.renderFruitShadows) {
+      this.ctx.fillStyle = style.shadow;
+      this.ctx.beginPath();
+      this.ctx.ellipse(fruit.x, fruit.y + r * 0.02, r * 0.97, r * 1.02, 0, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
 
     this.ctx.fillStyle = g;
     this.ctx.beginPath();
@@ -2917,10 +2946,12 @@ class GameApp {
     g.addColorStop(0, style.body[1]);
     g.addColorStop(1, style.body[0]);
 
-    this.ctx.fillStyle = style.shadow;
-    this.ctx.beginPath();
-    this.ctx.arc(fruit.x, fruit.y, r * 0.96, 0, Math.PI * 2);
-    this.ctx.fill();
+    if (this.renderFruitShadows) {
+      this.ctx.fillStyle = style.shadow;
+      this.ctx.beginPath();
+      this.ctx.arc(fruit.x, fruit.y, r * 0.96, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
     this.ctx.fillStyle = g;
     this.ctx.beginPath();
     this.ctx.arc(fruit.x, fruit.y, r * 0.9, 0, Math.PI * 2);
@@ -3275,40 +3306,46 @@ class GameApp {
 
   refreshHud() {
     this.updateHudLayout();
+    const aiMode = this.mode === MODES.AI_VS_HUMAN;
+    const timerText = aiMode ? formatTime(this.roundTimeRemaining) : "Arcade";
+
     this.hudHumanScore.textContent = String(this.humanScore);
     this.hudAiScore.textContent = String(this.aiScore);
-    this.hudMode.textContent = this.mode === MODES.AI_VS_HUMAN ? "Mode: AI vs Human" : "Mode: Classic";
-    this.hudTimer.textContent = this.mode === MODES.AI_VS_HUMAN ? formatTime(this.roundTimeRemaining) : "Arcade";
+    this.hudMode.textContent = aiMode ? "Mode: AI vs Human" : "Mode: Classic";
+    this.hudTimer.textContent = timerText;
 
-    if (this.mode === MODES.AI_VS_HUMAN) {
-      this.hudLives.textContent = "";
-      this.hudLives.classList.add("hidden");
-    } else {
-      this.hudLives.textContent = `Lives: ${this.lives}`;
+    if (aiMode) {
+      this.hudLives.textContent = `Time: ${timerText}`;
       this.hudLives.classList.remove("hidden");
-    }
 
-    if (this.mode === MODES.AI_VS_HUMAN) {
-      if (this.roundPhase === "countdown") {
-        this.hudDifficulty.textContent = this.roundCountdownText ? `Starting: ${this.roundCountdownText}` : "Get Ready";
+      let aiStatus = "";
+      if (this.aiController.statusTimer > 0 && this.aiController.statusText) {
+        aiStatus = this.aiController.statusText;
+      } else if (this.aiController.comboTimer > 0 && this.aiController.comboText) {
+        aiStatus = this.aiController.comboText;
+      } else if (this.roundPhase === "countdown") {
+        aiStatus = this.roundCountdownText ? `Starting: ${this.roundCountdownText}` : "Get Ready";
       } else {
         const boostLabel = this.aiController.adaptiveStageLabel;
-        this.hudDifficulty.textContent = boostLabel === "x1" ? "Keep Slicing" : `AI Boost: ${boostLabel}`;
+        aiStatus = boostLabel === "x1" ? "Keep Slicing" : `Boost ${boostLabel}`;
       }
+
       if (this.hudAiStatus) {
-        if (this.aiController.statusTimer > 0 && this.aiController.statusText) {
-          this.hudAiStatus.textContent = this.aiController.statusText;
-        } else if (this.aiController.comboTimer > 0 && this.aiController.comboText) {
-          this.hudAiStatus.textContent = this.aiController.comboText;
-        } else {
-          this.hudAiStatus.textContent = "";
-        }
+        this.hudAiStatus.textContent = aiStatus;
       }
+      this.hudDifficulty.textContent = aiStatus;
     } else {
-      this.hudDifficulty.textContent = this.humanComboTimer > 0 ? this.humanComboText : "Slice fruits, avoid bombs";
+      const classicInfo =
+        this.humanComboTimer > 0 && this.humanComboText
+          ? `${this.humanComboText}  |  Best: ${this.highScore}`
+          : `Lives: ${this.lives}  |  Best: ${this.highScore}`;
+      this.hudLives.textContent = classicInfo;
+      this.hudLives.classList.remove("hidden");
+
       if (this.hudAiStatus) {
         this.hudAiStatus.textContent = "";
       }
+      this.hudDifficulty.textContent = "";
     }
 
     this.hudHighScore.textContent = `Best: ${this.highScore}`;
@@ -3319,11 +3356,45 @@ function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) {
     return;
   }
+  let hasReloadedAfterControllerChange = false;
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js", { scope: "./" }).catch((error) => {
-      // eslint-disable-next-line no-console
-      console.warn("Service worker registration failed:", error);
-    });
+    navigator.serviceWorker
+      .register("./sw.js", { scope: "./" })
+      .then((registration) => {
+        const requestActivate = (worker) => {
+          if (worker) {
+            worker.postMessage("SKIP_WAITING");
+          }
+        };
+
+        if (registration.waiting) {
+          requestActivate(registration.waiting);
+        }
+
+        registration.addEventListener("updatefound", () => {
+          const installing = registration.installing;
+          if (!installing) {
+            return;
+          }
+          installing.addEventListener("statechange", () => {
+            if (installing.state === "installed" && navigator.serviceWorker.controller) {
+              requestActivate(installing);
+            }
+          });
+        });
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn("Service worker registration failed:", error);
+      });
+  });
+
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (hasReloadedAfterControllerChange) {
+      return;
+    }
+    hasReloadedAfterControllerChange = true;
+    window.location.reload();
   });
 }
 

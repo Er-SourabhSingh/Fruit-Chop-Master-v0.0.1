@@ -76,11 +76,12 @@ body {
 }
 
 .hud--classic {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, max-content);
+  justify-content: flex-start;
 }
 
 .hud--ai {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .hud-side,
@@ -381,16 +382,11 @@ button:disabled {
   }
 
   .hud--classic {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, max-content);
   }
 
   .hud--ai {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .hud--ai .hud-center {
-    grid-column: 1 / -1;
-    align-items: center;
   }
 
   .hud-side,
