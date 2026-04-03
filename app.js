@@ -868,9 +868,12 @@ class AIController {
       return null;
     }
 
-    const reactableObjects = objects.filter(
-      (obj) => this.isSliceableVisible(obj, bounds) && this.reactionReady(obj, now),
-    );
+    const reactableObjects = objects.filter((obj) => {
+      const visibleForAi = this.pwaContinuousMode
+        ? this.isFullyVisible(obj, bounds)
+        : this.isSliceableVisible(obj, bounds);
+      return visibleForAi && this.reactionReady(obj, now);
+    });
 
     const regularFruits = reactableObjects.filter((obj) => obj.kind === "fruit");
     const hearts = reactableObjects.filter((obj) => obj.kind === "heart");
@@ -2176,8 +2179,13 @@ class GameApp {
         break;
       }
 
+      const strictAiVisibilityMode = isStandaloneDisplay() || this.isCoarsePointer;
       const hasVisibleFruit = this.objects.some(
-        (obj) => obj.kind === "fruit" && this.aiController.isSliceableVisible(obj, this.bounds),
+        (obj) =>
+          obj.kind === "fruit" &&
+          (strictAiVisibilityMode
+            ? this.aiController.isFullyVisible(obj, this.bounds)
+            : this.aiController.isSliceableVisible(obj, this.bounds)),
       );
       if (!hasVisibleFruit) {
         break;
@@ -2228,8 +2236,13 @@ class GameApp {
       return;
     }
 
+    const strictAiVisibilityMode = isStandaloneDisplay() || this.isCoarsePointer;
     const hasVisibleFruit = this.objects.some(
-      (obj) => obj.kind === "fruit" && this.aiController.isSliceableVisible(obj, this.bounds),
+      (obj) =>
+        obj.kind === "fruit" &&
+        (strictAiVisibilityMode
+          ? this.aiController.isFullyVisible(obj, this.bounds)
+          : this.aiController.isSliceableVisible(obj, this.bounds)),
     );
     if (!hasVisibleFruit) {
       return;
