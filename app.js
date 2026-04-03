@@ -161,8 +161,11 @@ const AI_ADAPTIVE_TRACKING = {
 
 const PWA_AI_EXECUTION = {
   humanClaimWindowSeconds: 0.1,
+  spawnClaimGuardSeconds: 0.01,
   reactionBoost: 1.45,
   minRetryDelaySeconds: 0.012,
+  burstPassesPerFrame: 4,
+  virtualStepSeconds: 0.016,
 };
 
 const AI_ADAPTIVE_STAGES = [1, 2, 4, 6, 10];
@@ -855,7 +858,6 @@ class AIController {
     scoreGap = 0,
     humanPerformance = null,
     allowBombTargets = true,
-    blockedObjectIds = null,
     pwaContinuousMode = false,
   ) {
     this.pwaContinuousMode = Boolean(pwaContinuousMode);
@@ -866,12 +868,9 @@ class AIController {
       return null;
     }
 
-    const reactableObjects = objects.filter((obj) => {
-      if (blockedObjectIds && blockedObjectIds.has(obj.id)) {
-        return false;
-      }
-      return this.isSliceableVisible(obj, bounds) && this.reactionReady(obj, now);
-    });
+    const reactableObjects = objects.filter(
+      (obj) => this.isSliceableVisible(obj, bounds) && this.reactionReady(obj, now),
+    );
 
     const regularFruits = reactableObjects.filter((obj) => obj.kind === "fruit");
     const hearts = reactableObjects.filter((obj) => obj.kind === "heart");
@@ -2115,27 +2114,15 @@ class GameApp {
     this.updateSpawning(dt);
     this.updateObjects(dt);
     this.trackFirstPlayableFruit(now);
-    const pwaAiContinuousMode = this.mode === MODES.AI_VS_HUMAN && isStandaloneDisplay();
+    const pwaAiContinuousMode =
+      this.mode === MODES.AI_VS_HUMAN && (isStandaloneDisplay() || this.isCoarsePointer);
     const humanClaims = this.collectHumanSliceClaims(now, pwaAiContinuousMode);
-    const blockedObjectIds =
-      pwaAiContinuousMode && humanClaims.size ? new Set(humanClaims.keys()) : null;
     const humanPerformance =
       this.mode === MODES.AI_VS_HUMAN ? this.buildHumanPerformanceSnapshot(now) : null;
-    const aiDecision =
-      this.state === "running" && this.mode === MODES.AI_VS_HUMAN && this.canAiAct(now)
-        ? this.aiController.decide(
-            now,
-            this.objects,
-            this.bounds,
-            this.roundProgress(),
-            this.humanScore - this.aiScore,
-            humanPerformance,
-            false,
-            blockedObjectIds,
-            pwaAiContinuousMode,
-          )
-        : null;
-    this.resolveSliceClaims(now, humanClaims, aiDecision);
+    const aiResolved = this.runAiSlicing(now, humanClaims, humanPerformance, pwaAiContinuousMode);
+    if (!aiResolved) {
+      this.resolveSliceClaims(now, humanClaims, null);
+    }
 
     if (this.state === "running") {
       this.handleMissedObjects();
@@ -2143,6 +2130,63 @@ class GameApp {
     }
 
     this.refreshHud();
+  }
+
+  runAiSlicing(now, humanClaims, humanPerformance, pwaAiContinuousMode = false) {
+    if (this.state !== "running" || this.mode !== MODES.AI_VS_HUMAN || !this.canAiAct(now)) {
+      return false;
+    }
+
+    const maxPasses = pwaAiContinuousMode ? PWA_AI_EXECUTION.burstPassesPerFrame : 1;
+    let resolved = false;
+    let passNow = now;
+    let claimsForPass = humanClaims;
+
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      if (!this.canAiAct(passNow)) {
+        break;
+      }
+
+      const aiDecision = this.aiController.decide(
+        passNow,
+        this.objects,
+        this.bounds,
+        this.roundProgress(),
+        this.humanScore - this.aiScore,
+        humanPerformance,
+        false,
+        pwaAiContinuousMode,
+      );
+
+      if (!aiDecision) {
+        if (!pwaAiContinuousMode) {
+          break;
+        }
+        passNow += PWA_AI_EXECUTION.virtualStepSeconds;
+        continue;
+      }
+
+      this.resolveSliceClaims(passNow, claimsForPass, aiDecision);
+      resolved = true;
+      if (claimsForPass.size) {
+        claimsForPass = new Map();
+      }
+
+      if (!pwaAiContinuousMode) {
+        break;
+      }
+
+      const hasVisibleFruit = this.objects.some(
+        (obj) => obj.kind === "fruit" && this.aiController.isSliceableVisible(obj, this.bounds),
+      );
+      if (!hasVisibleFruit) {
+        break;
+      }
+
+      passNow += PWA_AI_EXECUTION.virtualStepSeconds;
+    }
+
+    return resolved;
   }
 
   updateRoundCountdown(now, dt) {
@@ -2400,6 +2444,7 @@ class GameApp {
   }
 
   spawnFruit(x, y, launch) {
+    const spawnedAt = performance.now() / 1000;
     const fruit = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
     const radius = 34 * launch.scale;
     if (this.mode === MODES.AI_VS_HUMAN) {
@@ -2416,6 +2461,7 @@ class GameApp {
       vy: launch.vy,
       gravity: launch.gravity,
       radius,
+      spawnedAt,
       pulse: randomRange(0, Math.PI * 2),
     });
   }
@@ -2424,6 +2470,7 @@ class GameApp {
     if (this.mode === MODES.AI_VS_HUMAN) {
       return;
     }
+    const spawnedAt = performance.now() / 1000;
     const radius = 31 * launch.scale;
     this.objects.push({
       id: nextObjectId++,
@@ -2436,11 +2483,13 @@ class GameApp {
       vy: launch.vy,
       gravity: launch.gravity,
       radius,
+      spawnedAt,
       pulse: randomRange(0, Math.PI * 2),
     });
   }
 
   spawnHeart(x, y, launch) {
+    const spawnedAt = performance.now() / 1000;
     const radius = 29 * launch.scale;
     this.objects.push({
       id: nextObjectId++,
@@ -2453,6 +2502,7 @@ class GameApp {
       vy: launch.vy,
       gravity: launch.gravity,
       radius,
+      spawnedAt,
       pulse: randomRange(0, Math.PI * 2),
     });
   }
@@ -2496,6 +2546,13 @@ class GameApp {
         return;
       }
       this.objects.forEach((obj) => {
+        if (
+          pwaAiContinuousMode &&
+          Number.isFinite(obj.spawnedAt) &&
+          segment.time + PWA_AI_EXECUTION.spawnClaimGuardSeconds < obj.spawnedAt
+        ) {
+          return;
+        }
         const collided = lineCircleCollision(
           segment.start,
           segment.end,
