@@ -1,4 +1,4 @@
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v5";
 const APP_SHELL_CACHE = `fruit-chop-shell-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `fruit-chop-runtime-${CACHE_VERSION}`;
 
@@ -135,7 +135,13 @@ self.addEventListener("fetch", (event) => {
 
   const isCoreFile = APP_SHELL_PATHS.has(requestUrl.pathname);
   if (isCoreFile) {
-    event.respondWith(cacheFirst(event.request));
+    const shouldRevalidateCore =
+      requestUrl.pathname.endsWith("/app.js") ||
+      requestUrl.pathname.endsWith("/styles.css") ||
+      requestUrl.pathname.endsWith("/index.html") ||
+      requestUrl.pathname.endsWith("/manifest.json") ||
+      requestUrl.pathname.endsWith("/manifest.webmanifest");
+    event.respondWith(shouldRevalidateCore ? staleWhileRevalidate(event.request) : cacheFirst(event.request));
     return;
   }
 

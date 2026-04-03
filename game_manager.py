@@ -302,6 +302,7 @@ class GameManager:
             return
 
         if self.active_mode == MODE_AI_VS_HUMAN:
+            self._purge_ai_mode_non_fruit_objects()
             self.round_time_remaining = max(0.0, self.round_time_remaining - dt)
             if self.round_time_remaining <= 0.0:
                 self._trigger_game_over("time_up")
@@ -461,6 +462,7 @@ class GameManager:
 
     def _spawn_wave(self) -> None:
         if self.active_mode == MODE_AI_VS_HUMAN:
+            self._purge_ai_mode_non_fruit_objects()
             elapsed = self._round_elapsed_seconds()
             object_count = 2
             if elapsed < 15.0:
@@ -509,20 +511,16 @@ class GameManager:
         y_pos = self.height + max(55, int(self.height * 0.1))
 
         vx, vy, gravity, scale = self._build_launch_profile()
-        if self.active_mode == MODE_AI_VS_HUMAN and not self.has_spawned_opening_fruit:
+        if self.active_mode == MODE_AI_VS_HUMAN:
             self._spawn_fruit(position=(x_pos, y_pos), velocity=(vx, vy), gravity=gravity, scale=scale)
-            self.has_spawned_opening_fruit = True
             return
 
         if self._should_spawn_heart():
             self._spawn_heart(position=(x_pos, y_pos), velocity=(vx, vy), gravity=gravity, scale=scale)
             return
 
-        if self.active_mode == MODE_AI_VS_HUMAN:
-            bomb_chance = min(0.26, 0.09 + (self._round_progress() * 0.15))
-        else:
-            progress_score = self._difficulty_progress_score()
-            bomb_chance = min(0.24, 0.10 + (progress_score * 0.0018))
+        progress_score = self._difficulty_progress_score()
+        bomb_chance = min(0.24, 0.10 + (progress_score * 0.0018))
         if random.random() < bomb_chance:
             self._spawn_bomb(position=(x_pos, y_pos), velocity=(vx, vy), gravity=gravity, scale=scale)
             return
@@ -592,6 +590,8 @@ class GameManager:
         gravity: float,
         scale: float,
     ) -> None:
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            return
         bomb = Bomb(
             position=position,
             velocity=velocity,
@@ -672,7 +672,7 @@ class GameManager:
             if decision.combo_bonus > 0:
                 self._play_sound("combo")
 
-        if decision.bomb_target is not None:
+        if decision.bomb_target is not None and self.active_mode != MODE_AI_VS_HUMAN:
             decision.bomb_target.slice()
             removed.add(decision.bomb_target)
             self._handle_ai_bomb_hit(decision.bomb_target)
@@ -717,6 +717,9 @@ class GameManager:
 
     def _handle_bomb_hit(self, bomb: Bomb) -> None:
         bomb.slice()
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            self._spawn_juice_splash(bomb.position, (255, 143, 143))
+            return
         self._trigger_bomb_blast(bomb.position, reason="human_bomb")
 
     def _apply_missed_fruit_penalty(self) -> None:
@@ -741,25 +744,28 @@ class GameManager:
     def _is_regular_fruit(obj: Fruit) -> bool:
         return not isinstance(obj, (Bomb, HeartPickup))
 
+    def _purge_ai_mode_non_fruit_objects(self) -> None:
+        if self.active_mode != MODE_AI_VS_HUMAN or not self.objects:
+            return
+        self.objects = [obj for obj in self.objects if self._is_regular_fruit(obj)]
+
     def _trigger_game_over(self, reason: str) -> None:
         if self.state == "game_over":
             return
 
-        self.game_over_reason = reason
+        safe_reason = "time_up" if self.active_mode == MODE_AI_VS_HUMAN and reason == "human_bomb" else reason
+        self.game_over_reason = safe_reason
         self._finalize_high_score()
         self.state = "game_over"
         self.round_phase = "idle"
         self.objects.clear()
         self.blade.reset()
         self.pending_game_over_reason = ""
-        self.result_model = self._build_result_model(reason)
+        self.result_model = self._build_result_model(safe_reason)
 
     def _build_result_model(self, reason: str) -> ResultScreenModel:
         if self.active_mode == MODE_AI_VS_HUMAN:
-            if reason == "human_bomb":
-                outcome_text = "AI Wins! Bomb Hit"
-                winner = "ai"
-            elif self.human_player.score > self.ai_player.score:
+            if self.human_player.score > self.ai_player.score:
                 outcome_text = "You Win!"
                 winner = "human"
             elif self.human_player.score < self.ai_player.score:
@@ -831,6 +837,10 @@ class GameManager:
             return
 
     def _trigger_bomb_blast(self, position: pygame.Vector2, reason: str) -> None:
+        if self.active_mode == MODE_AI_VS_HUMAN:
+            self._purge_ai_mode_non_fruit_objects()
+            self._spawn_juice_splash(position, (255, 143, 143))
+            return
         self.state = "bomb_blast"
         self.round_phase = "active"
         self.pending_game_over_reason = reason

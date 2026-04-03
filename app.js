@@ -159,6 +159,8 @@ const AI_ADAPTIVE_TRACKING = {
   },
 };
 
+const AI_ADAPTIVE_STAGES = [1, 2, 4, 6, 10];
+
 const FRUIT_TYPES = [
   { name: "apple", color: "#de3345" },
   { name: "banana", color: "#f3dc64" },
@@ -787,6 +789,8 @@ class AIController {
     this.visibleSince = new Map();
     this.reactionDelayByObject = new Map();
     this.slashEffect = new AISlashEffect(12);
+    this.adaptiveStageIndex = 0;
+    this.nextAdaptiveUpgradeAt = 0;
     this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
     this.frameCompensation = 1;
     this.lastFrameDt = 1 / 60;
@@ -795,6 +799,8 @@ class AIController {
   setDifficulty(level) {
     this.difficultyLevel = AI_DIFFICULTY[level] ? level : "medium";
     this.profile = AI_DIFFICULTY[this.difficultyLevel];
+    this.adaptiveStageIndex = 0;
+    this.nextAdaptiveUpgradeAt = 0;
     this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
   }
 
@@ -803,6 +809,8 @@ class AIController {
     this.comboTimer = 0;
     this.statusText = "";
     this.statusTimer = 0;
+    this.adaptiveStageIndex = 0;
+    this.nextAdaptiveUpgradeAt = now;
     this.currentAdaptiveBoost = this.defaultAdaptiveBoost();
     this.nextActionAt = now + this.actionDelay(0, 1, this.currentAdaptiveBoost);
     this.visibleSince.clear();
@@ -815,7 +823,7 @@ class AIController {
   }
 
   get adaptiveStageLabel() {
-    return `x${this.currentAdaptiveBoost.stageMultiplier || 1}`;
+    return `x${this.currentStageMultiplier()}`;
   }
 
   update(dt) {
@@ -840,7 +848,7 @@ class AIController {
     humanPerformance = null,
     allowBombTargets = true,
   ) {
-    this.currentAdaptiveBoost = this.buildAdaptiveBoost(roundProgress, scoreGap, humanPerformance);
+    this.currentAdaptiveBoost = this.buildAdaptiveBoost(now, roundProgress, scoreGap, humanPerformance);
     this.pullActionForward(now, this.currentAdaptiveBoost);
     this.syncVisibility(now, objects, bounds);
     if (now < this.nextActionAt) {
@@ -938,9 +946,10 @@ class AIController {
   }
 
   defaultAdaptiveBoost() {
+    const stageMultiplier = this.currentStageMultiplier();
     return {
-      stageMultiplier: 1,
-      reactionMultiplier: 1,
+      stageMultiplier,
+      reactionMultiplier: stageMultiplier,
       targetingMultiplier: 1,
       comboChanceMultiplier: 1,
       hitChanceBoost: 0,
@@ -950,15 +959,59 @@ class AIController {
     };
   }
 
-  buildAdaptiveBoost(roundProgress, scoreGap, humanPerformance) {
+  currentStageMultiplier() {
+    return AI_ADAPTIVE_STAGES[this.adaptiveStageIndex] || AI_ADAPTIVE_STAGES[0];
+  }
+
+  adaptiveUpgradeCooldown(roundProgress) {
+    return clamp(8 - roundProgress * 6, 2, 8);
+  }
+
+  shouldUpgradeAdaptiveStage(humanPerformance) {
+    if (!humanPerformance) {
+      return false;
+    }
+    const hasCompetitionData =
+      humanPerformance.humanScore > 0 ||
+      humanPerformance.aiScore > 0 ||
+      humanPerformance.cutCount > 0 ||
+      humanPerformance.aiCutCount > 0;
+    if (!hasCompetitionData) {
+      return false;
+    }
+    return (
+      humanPerformance.humanScore >= humanPerformance.aiScore ||
+      humanPerformance.cutCount >= humanPerformance.aiCutCount
+    );
+  }
+
+  updateAdaptiveStage(now, roundProgress, humanPerformance) {
+    if (this.adaptiveStageIndex >= AI_ADAPTIVE_STAGES.length - 1) {
+      return;
+    }
+    if (now < this.nextAdaptiveUpgradeAt) {
+      return;
+    }
+    if (!this.shouldUpgradeAdaptiveStage(humanPerformance)) {
+      return;
+    }
+    this.adaptiveStageIndex += 1;
+    this.nextAdaptiveUpgradeAt = now + this.adaptiveUpgradeCooldown(roundProgress);
+  }
+
+  buildAdaptiveBoost(now, roundProgress, scoreGap, humanPerformance) {
     const base = this.defaultAdaptiveBoost();
     if (!humanPerformance) {
       return base;
     }
 
+    this.updateAdaptiveStage(now, roundProgress, humanPerformance);
+    const stageMultiplier = this.currentStageMultiplier();
     const difficultyScale =
       this.difficultyLevel === "hard" ? 1.28 : this.difficultyLevel === "medium" ? 1.05 : 0.8;
-    const leadActive = humanPerformance.humanScore >= humanPerformance.aiScore;
+    const leadActive =
+      humanPerformance.humanScore >= humanPerformance.aiScore ||
+      humanPerformance.cutCount >= humanPerformance.aiCutCount;
     const cutRateRatio = clamp(
       humanPerformance.recentCutRate / Math.max(0.01, humanPerformance.expectedCutRate),
       0,
@@ -996,36 +1049,11 @@ class AIController {
       roundProgress * 0.2;
     const pressure = rawPressure * difficultyScale;
 
-    let stageMultiplier = 1;
-    if (
-      pressure >= 6.2 ||
-      cutRateRatio >= 5.2 ||
-      momentumRatio >= 5.2 ||
-      growthRatio >= 4.8
-    ) {
-      stageMultiplier = 10;
-    } else if (
-      pressure >= 3.9 ||
-      cutRateRatio >= 3.4 ||
-      momentumRatio >= 3.4 ||
-      growthRatio >= 2.7
-    ) {
-      stageMultiplier = 4;
-    } else if (
-      pressure >= 1.8 ||
-      cutRateRatio >= 1.8 ||
-      momentumRatio >= 1.8 ||
-      leadActive
-    ) {
-      stageMultiplier = 2;
-    }
-
-    if (leadActive) {
-      stageMultiplier = Math.max(stageMultiplier, this.difficultyLevel === "hard" ? 4 : 2);
-    }
-
-    const overdrive = clamp((pressure - 1) * 0.08, 0, 0.9);
+    const overdrive = clamp((pressure - 1) * 0.05, 0, 0.45);
     let reactionMultiplier = stageMultiplier * (1 + overdrive);
+    if (leadActive) {
+      reactionMultiplier *= 1.06;
+    }
     if (this.difficultyLevel === "hard") {
       reactionMultiplier *= 1.15;
     } else if (this.difficultyLevel === "medium") {
@@ -1036,17 +1064,21 @@ class AIController {
     return {
       stageMultiplier,
       reactionMultiplier,
-      targetingMultiplier: clamp(1 + (reactionMultiplier - 1) * 0.22, 1, 3.4),
-      comboChanceMultiplier: clamp(1 + (reactionMultiplier - 1) * 0.16, 1, 2.8),
-      hitChanceBoost: clamp((reactionMultiplier - 1) * 0.011 + Math.max(0, scoreGap) * 0.004, 0, 0.14),
-      hesitationScale: clamp(1 - (reactionMultiplier - 1) * 0.075, 0.22, 1),
+      targetingMultiplier: clamp(1 + (reactionMultiplier - 1) * 0.28, 1, 3.8),
+      comboChanceMultiplier: clamp(1 + (reactionMultiplier - 1) * 0.2, 1, 3.1),
+      hitChanceBoost: clamp(
+        (reactionMultiplier - 1) * 0.013 + Math.max(0, scoreGap) * 0.005 + (leadActive ? 0.01 : 0),
+        0,
+        0.18,
+      ),
+      hesitationScale: clamp(1 - (reactionMultiplier - 1) * 0.085, 0.12, 1),
       bombMistakeScale: clamp(1 - (reactionMultiplier - 1) * 0.08, 0.2, 1),
       comboTargetBonus:
         stageMultiplier >= 10
           ? this.difficultyLevel === "hard"
             ? 2
             : 1
-          : stageMultiplier >= 4
+          : stageMultiplier >= 6
             ? 1
             : 0,
     };
@@ -1450,6 +1482,7 @@ class GameApp {
 
     this.humanScore = 0;
     this.aiScore = 0;
+    this.aiCutCount = 0;
     this.lives = this.mode === MODES.AI_VS_HUMAN ? GAME_CONFIG.aiModeLives : GAME_CONFIG.startingLives;
     this.skippedFruits = 0;
     this.roundTimeRemaining = GAME_CONFIG.aiRoundSeconds;
@@ -1947,6 +1980,7 @@ class GameApp {
 
     this.humanScore = 0;
     this.aiScore = 0;
+    this.aiCutCount = 0;
     this.lives = this.mode === MODES.AI_VS_HUMAN ? GAME_CONFIG.aiModeLives : GAME_CONFIG.startingLives;
     this.skippedFruits = 0;
     this.roundTimeRemaining = GAME_CONFIG.aiRoundSeconds;
@@ -2048,11 +2082,7 @@ class GameApp {
         this.finishGame("time_up");
         return;
       }
-
-      // Bombs are fully disabled in AI mode across all platforms.
-      if (this.objects.some((obj) => obj.kind === "bomb")) {
-        this.objects = this.objects.filter((obj) => obj.kind !== "bomb");
-      }
+      this.purgeAiModeNonFruitObjects();
     }
 
     this.updateDifficulty(dt);
@@ -2206,6 +2236,16 @@ class GameApp {
     return AI_TIME_SCALING[AI_TIME_SCALING.length - 1];
   }
 
+  purgeAiModeNonFruitObjects() {
+    if (this.mode !== MODES.AI_VS_HUMAN || !this.objects.length) {
+      return;
+    }
+    if (!this.objects.some((obj) => obj.kind !== "fruit")) {
+      return;
+    }
+    this.objects = this.objects.filter((obj) => obj.kind === "fruit");
+  }
+
   updateSpawning(dt) {
     if (this.roundPhase !== "active") {
       return;
@@ -2221,6 +2261,7 @@ class GameApp {
 
   spawnWave() {
     if (this.mode === MODES.AI_VS_HUMAN) {
+      this.purgeAiModeNonFruitObjects();
       const progress = this.roundProgress();
       const aiPacing = AI_MATCH_PACING[AI_MODE_DIFFICULTY] || AI_MATCH_PACING.hard;
       const targetFruitCount = Math.round(
@@ -2270,6 +2311,7 @@ class GameApp {
     const launch = this.buildLaunchProfile();
 
     if (this.mode === MODES.AI_VS_HUMAN) {
+      this.purgeAiModeNonFruitObjects();
       if (!this.hasSpawnedOpeningFruit) {
         this.hasSpawnedOpeningFruit = true;
       }
@@ -2580,6 +2622,7 @@ class GameApp {
     }
 
     if (aiFruitHits > 0) {
+      this.aiCutCount += aiFruitHits;
       this.aiScore += aiFruitHits;
       if (aiFruitHits > 1) {
         if (this.mode === MODES.AI_VS_HUMAN) {
@@ -2602,6 +2645,9 @@ class GameApp {
   }
 
   handleMissedObjects() {
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      this.purgeAiModeNonFruitObjects();
+    }
     const remaining = [];
     for (const obj of this.objects) {
       const offScreen = obj.y - obj.radius > this.bounds.bottom + 120;
@@ -2642,6 +2688,11 @@ class GameApp {
   }
 
   triggerBombBlast(position, reason) {
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      this.purgeAiModeNonFruitObjects();
+      this.spawnJuiceSplash(position, "#ff8f8f");
+      return;
+    }
     this.state = "bomb_blast";
     this.roundPhase = "active";
     this.pendingEndReason = reason;
@@ -2658,6 +2709,8 @@ class GameApp {
     if (this.state === "result") {
       return;
     }
+    const safeReason =
+      this.mode === MODES.AI_VS_HUMAN && reason === "human_bomb" ? "time_up" : reason;
     this.state = "result";
     this.roundPhase = "idle";
 
@@ -2675,10 +2728,7 @@ class GameApp {
 
     if (this.mode === MODES.AI_VS_HUMAN) {
       title = "Match Over";
-      if (reason === "human_bomb") {
-        outcome = "AI Wins! Bomb Hit";
-        winner = "ai";
-      } else if (reason === "human_out_of_lives") {
+      if (safeReason === "human_out_of_lives") {
         outcome = "AI Wins! Out Of Lives";
         winner = "ai";
       } else if (this.humanScore > this.aiScore) {
@@ -2795,6 +2845,7 @@ class GameApp {
       humanScore: this.humanScore,
       aiScore: this.aiScore,
       cutCount: this.humanCutCount,
+      aiCutCount: this.aiCutCount,
       recentCutRate,
       recentComboRate,
       scoreMomentum,
