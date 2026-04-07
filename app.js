@@ -56,6 +56,13 @@ const FRUIT_SIZING = {
   spawnAttempts: 18,
 };
 
+const SPECIAL_OBJECT_SIZING = {
+  minWidthRatio: 0.1,
+  maxWidthRatio: 0.12,
+  heartWidthRatioRange: [0.105, 0.118],
+  bombWidthRatioRange: [0.108, 0.12],
+};
+
 const ROUND_FLOW = {
   startDelaySeconds: 0.24,
   countdownStepSeconds: 0.72,
@@ -1864,6 +1871,8 @@ class GameApp {
   rescaleRuntimeObjects(scaleX, scaleY) {
     const minFruitRadius = this.bounds.right * FRUIT_SIZING.minWidthRatio;
     const maxFruitRadius = this.bounds.right * FRUIT_SIZING.maxWidthRatio;
+    const minSpecialRadius = this.bounds.right * SPECIAL_OBJECT_SIZING.minWidthRatio;
+    const maxSpecialRadius = this.bounds.right * SPECIAL_OBJECT_SIZING.maxWidthRatio;
     const radiusScale = Math.min(scaleX, scaleY);
     this.objects.forEach((obj) => {
       obj.x *= scaleX;
@@ -1874,6 +1883,8 @@ class GameApp {
       if (obj.kind === "fruit") {
         obj.radius = clamp(obj.radius, minFruitRadius, maxFruitRadius);
         this.applyFruitHitbox(obj);
+      } else if (obj.kind === "heart" || obj.kind === "bomb") {
+        obj.radius = clamp(obj.radius, minSpecialRadius, maxSpecialRadius);
       }
       obj.x = clamp(obj.x, obj.radius, this.bounds.right - obj.radius);
     });
@@ -2654,6 +2665,24 @@ class GameApp {
     return bestX;
   }
 
+  specialObjectRatioRange(kind) {
+    if (kind === "bomb") {
+      return SPECIAL_OBJECT_SIZING.bombWidthRatioRange;
+    }
+    return SPECIAL_OBJECT_SIZING.heartWidthRatioRange;
+  }
+
+  computeSpecialObjectRadius(kind) {
+    const width = Math.max(1, this.bounds.right - this.bounds.left);
+    const ratioRange = this.specialObjectRatioRange(kind);
+    const ratio = randomRange(ratioRange[0], ratioRange[1]);
+    return clamp(
+      width * ratio,
+      width * SPECIAL_OBJECT_SIZING.minWidthRatio,
+      width * SPECIAL_OBJECT_SIZING.maxWidthRatio,
+    );
+  }
+
   applyFruitHitbox(obj) {
     if (!obj || obj.kind !== "fruit") {
       return;
@@ -2779,14 +2808,16 @@ class GameApp {
     }
 
     if (this.shouldSpawnHeart()) {
-      this.spawnHeart(baseX, baseY, this.buildLaunchProfile(baseY));
+      const heartRadius = this.computeSpecialObjectRadius("heart");
+      this.spawnHeart(baseX, baseY, this.buildLaunchProfile(baseY, heartRadius), heartRadius);
       return;
     }
 
     const progressScore = this.humanScore;
     const bombChance = Math.min(0.24, 0.1 + progressScore * 0.0018);
     if (Math.random() < bombChance) {
-      this.spawnBomb(baseX, baseY, this.buildLaunchProfile(baseY));
+      const bombRadius = this.computeSpecialObjectRadius("bomb");
+      this.spawnBomb(baseX, baseY, this.buildLaunchProfile(baseY, bombRadius), bombRadius);
       return;
     }
     this.spawnFruit(
@@ -2927,12 +2958,11 @@ class GameApp {
     this.objects.push(fruitObject);
   }
 
-  spawnBomb(x, y, launch) {
+  spawnBomb(x, y, launch, radius = this.computeSpecialObjectRadius("bomb")) {
     if (this.mode === MODES.AI_VS_HUMAN) {
       return;
     }
     const spawnedAt = performance.now() / 1000;
-    const radius = 31 * launch.scale;
     this.objects.push({
       id: nextObjectId++,
       kind: "bomb",
@@ -2949,9 +2979,8 @@ class GameApp {
     });
   }
 
-  spawnHeart(x, y, launch) {
+  spawnHeart(x, y, launch, radius = this.computeSpecialObjectRadius("heart")) {
     const spawnedAt = performance.now() / 1000;
-    const radius = 29 * launch.scale;
     this.objects.push({
       id: nextObjectId++,
       kind: "heart",
@@ -3037,7 +3066,7 @@ class GameApp {
           return;
         }
         if (
-          obj.kind === "fruit" &&
+          (obj.kind === "fruit" || obj.kind === "heart" || obj.kind === "bomb") &&
           !this.isFullyVisibleInBounds(obj)
         ) {
           return;
