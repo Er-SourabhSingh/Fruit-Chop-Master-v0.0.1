@@ -39,6 +39,23 @@ const GAME_CONFIG = {
   baseSpawnInterval: 0.9,
 };
 
+const FRUIT_SIZING = {
+  defaultWidthRatio: 0.09,
+  minWidthRatio: 0.07,
+  maxWidthRatio: 0.12,
+  earlyWidthRatioRange: [0.1, 0.12],
+  midWidthRatioRange: [0.09, 0.1],
+  hardWidthRatioRange: [0.07, 0.08],
+  crowdedFruitThreshold: 10,
+  crowdedReductionRange: [0.1, 0.15],
+  crowdedRampFruits: 8,
+  hitboxScale: 1.1,
+  minTouchTargetPx: 44,
+  minSpacingPx: 12,
+  minSpacingWidthRatio: 0.018,
+  spawnAttempts: 18,
+};
+
 const ROUND_FLOW = {
   startDelaySeconds: 0.24,
   countdownStepSeconds: 0.72,
@@ -1845,12 +1862,19 @@ class GameApp {
   }
 
   rescaleRuntimeObjects(scaleX, scaleY) {
+    const minFruitRadius = this.bounds.right * FRUIT_SIZING.minWidthRatio;
+    const maxFruitRadius = this.bounds.right * FRUIT_SIZING.maxWidthRatio;
+    const radiusScale = Math.min(scaleX, scaleY);
     this.objects.forEach((obj) => {
       obj.x *= scaleX;
       obj.y *= scaleY;
       obj.vx *= scaleX;
       obj.vy *= scaleY;
-      obj.radius *= Math.min(scaleX, scaleY);
+      obj.radius *= radiusScale;
+      if (obj.kind === "fruit") {
+        obj.radius = clamp(obj.radius, minFruitRadius, maxFruitRadius);
+        this.applyFruitHitbox(obj);
+      }
       obj.x = clamp(obj.x, obj.radius, this.bounds.right - obj.radius);
     });
 
@@ -2502,6 +2526,162 @@ class GameApp {
     };
   }
 
+  activeFruitCount() {
+    return this.objects.reduce((count, obj) => count + (obj.kind === "fruit" ? 1 : 0), 0);
+  }
+
+  fruitGameplayStage() {
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      const progress = this.roundProgress();
+      if (progress < 0.33) {
+        return "early";
+      }
+      if (progress < 0.72) {
+        return "mid";
+      }
+      return "hard";
+    }
+
+    if (this.humanScore < 20) {
+      return "early";
+    }
+    if (this.humanScore < 60) {
+      return "mid";
+    }
+    return "hard";
+  }
+
+  fruitSizeRatioRange(stage) {
+    if (stage === "early") {
+      return FRUIT_SIZING.earlyWidthRatioRange;
+    }
+    if (stage === "hard") {
+      return FRUIT_SIZING.hardWidthRatioRange;
+    }
+    return FRUIT_SIZING.midWidthRatioRange;
+  }
+
+  fruitCrowdedReduction(activeFruitCount) {
+    if (activeFruitCount <= FRUIT_SIZING.crowdedFruitThreshold) {
+      return 0;
+    }
+    const crowdedProgress = clamp(
+      (activeFruitCount - FRUIT_SIZING.crowdedFruitThreshold) / FRUIT_SIZING.crowdedRampFruits,
+      0,
+      1,
+    );
+    return (
+      FRUIT_SIZING.crowdedReductionRange[0] +
+      (FRUIT_SIZING.crowdedReductionRange[1] - FRUIT_SIZING.crowdedReductionRange[0]) * crowdedProgress
+    );
+  }
+
+  computeFruitSizing(activeFruitCount = this.activeFruitCount()) {
+    const stage = this.fruitGameplayStage();
+    const ratioRange = this.fruitSizeRatioRange(stage);
+    let widthRatio = randomRange(ratioRange[0], ratioRange[1]);
+    const crowdedReduction = this.fruitCrowdedReduction(activeFruitCount);
+    if (crowdedReduction > 0) {
+      widthRatio *= 1 - crowdedReduction;
+    }
+    widthRatio = clamp(widthRatio, FRUIT_SIZING.minWidthRatio, FRUIT_SIZING.maxWidthRatio);
+    const width = Math.max(1, this.bounds.right - this.bounds.left);
+    const defaultRadius = width * FRUIT_SIZING.defaultWidthRatio;
+    const radius = clamp(
+      width * widthRatio,
+      width * FRUIT_SIZING.minWidthRatio,
+      width * FRUIT_SIZING.maxWidthRatio,
+    );
+    const hitRadius = Math.max(
+      radius * FRUIT_SIZING.hitboxScale,
+      FRUIT_SIZING.minTouchTargetPx * 0.5,
+    );
+    return {
+      stage,
+      widthRatio,
+      crowdedReduction,
+      radius: Number.isFinite(radius) ? radius : defaultRadius,
+      hitRadius,
+    };
+  }
+
+  fruitSpacingPadding(radius) {
+    const width = Math.max(1, this.bounds.right - this.bounds.left);
+    const widthSpacing = width * FRUIT_SIZING.minSpacingWidthRatio;
+    return Math.max(FRUIT_SIZING.minSpacingPx, widthSpacing, radius * 0.22);
+  }
+
+  findFruitSpawnX(radius, spawnY) {
+    const minX = radius;
+    const maxX = Math.max(minX, this.bounds.right - radius);
+    if (maxX <= minX) {
+      return minX;
+    }
+
+    const fruits = this.objects.filter((obj) => obj.kind === "fruit");
+    if (!fruits.length) {
+      return randomRange(minX, maxX);
+    }
+
+    const spacing = this.fruitSpacingPadding(radius);
+    let bestX = randomRange(minX, maxX);
+    let bestSlack = Number.NEGATIVE_INFINITY;
+
+    for (let attempt = 0; attempt < FRUIT_SIZING.spawnAttempts; attempt += 1) {
+      const candidateX = randomRange(minX, maxX);
+      let blocked = false;
+      let minSlack = Number.POSITIVE_INFINITY;
+
+      for (const other of fruits) {
+        const requiredDistance = radius + other.radius + spacing;
+        const distance = Math.hypot(candidateX - other.x, spawnY - other.y);
+        const slack = distance - requiredDistance;
+        minSlack = Math.min(minSlack, slack);
+        if (slack < 0) {
+          blocked = true;
+        }
+      }
+
+      if (!blocked) {
+        return candidateX;
+      }
+      if (minSlack > bestSlack) {
+        bestSlack = minSlack;
+        bestX = candidateX;
+      }
+    }
+
+    return bestX;
+  }
+
+  applyFruitHitbox(obj) {
+    if (!obj || obj.kind !== "fruit") {
+      return;
+    }
+    obj.sliceRadius = Math.max(
+      obj.radius * FRUIT_SIZING.hitboxScale,
+      FRUIT_SIZING.minTouchTargetPx * 0.5,
+    );
+  }
+
+  objectSliceRadius(obj) {
+    if (obj.kind !== "fruit") {
+      return obj.radius * 0.95;
+    }
+    if (!Number.isFinite(obj.sliceRadius)) {
+      this.applyFruitHitbox(obj);
+    }
+    return obj.sliceRadius;
+  }
+
+  isFullyVisibleInBounds(obj) {
+    const left = obj.x - obj.radius;
+    const right = obj.x + obj.radius;
+    const top = obj.y - obj.radius;
+    const bottom = obj.y + obj.radius;
+    return left >= this.bounds.left && right <= this.bounds.right && top >= this.bounds.top && bottom <= this.bounds.bottom;
+  }
+
   purgeAiModeNonFruitObjects() {
     if (this.mode !== MODES.AI_VS_HUMAN || !this.objects.length) {
       return;
@@ -2577,7 +2757,8 @@ class GameApp {
   spawnObject() {
     const baseX = this.bounds.right * 0.5;
     const baseY = this.bounds.bottom + Math.max(55, this.bounds.bottom * 0.1);
-    const launch = this.buildLaunchProfile(baseY);
+    const activeFruitCount = this.activeFruitCount();
+    const fruitSizing = this.computeFruitSizing(activeFruitCount);
 
     if (this.mode === MODES.AI_VS_HUMAN) {
       this.purgeAiModeNonFruitObjects();
@@ -2585,25 +2766,35 @@ class GameApp {
         this.hasSpawnedOpeningFruit = true;
       }
       if (this.shouldSpawnPenaltyBubble()) {
-        this.spawnPenaltyBubble(baseX, baseY, launch);
+        this.spawnPenaltyBubble(baseX, baseY, this.buildLaunchProfile(baseY));
         return;
       }
-      this.spawnFruit(baseX, baseY, launch);
+      this.spawnFruit(
+        baseX,
+        baseY,
+        this.buildLaunchProfile(baseY, fruitSizing.radius),
+        fruitSizing,
+      );
       return;
     }
 
     if (this.shouldSpawnHeart()) {
-      this.spawnHeart(baseX, baseY, launch);
+      this.spawnHeart(baseX, baseY, this.buildLaunchProfile(baseY));
       return;
     }
 
     const progressScore = this.humanScore;
     const bombChance = Math.min(0.24, 0.1 + progressScore * 0.0018);
     if (Math.random() < bombChance) {
-      this.spawnBomb(baseX, baseY, launch);
+      this.spawnBomb(baseX, baseY, this.buildLaunchProfile(baseY));
       return;
     }
-    this.spawnFruit(baseX, baseY, launch);
+    this.spawnFruit(
+      baseX,
+      baseY,
+      this.buildLaunchProfile(baseY, fruitSizing.radius),
+      fruitSizing,
+    );
   }
 
   shouldSpawnHeart() {
@@ -2663,7 +2854,7 @@ class GameApp {
     return true;
   }
 
-  buildLaunchProfile(spawnY) {
+  buildLaunchProfile(spawnY, fruitRadius = null) {
     const height = this.bounds.bottom - this.bounds.top;
     const width = this.bounds.right - this.bounds.left;
     const motionScale = clamp(height / 720, 0.75, 1.7);
@@ -2676,11 +2867,14 @@ class GameApp {
     let riseDistance = height * randomRange(0.3, 1.08);
     let entrySpeedScale = 1;
     if (this.mode === MODES.AI_VS_HUMAN) {
-      const fruitRadius = 34 * scale;
+      const safeFruitRadius =
+        Number.isFinite(fruitRadius) && fruitRadius > 0
+          ? fruitRadius
+          : width * FRUIT_SIZING.defaultWidthRatio;
       const topMargin = Math.max(AI_FRUIT_FLIGHT.topSafeMargin, height * AI_FRUIT_FLIGHT.topSafeRatio);
       const bottomMargin = Math.max(AI_FRUIT_FLIGHT.bottomSafeMargin, height * AI_FRUIT_FLIGHT.bottomSafeRatio);
-      const minApexY = this.bounds.top + topMargin + fruitRadius;
-      const maxApexY = this.bounds.bottom - bottomMargin - fruitRadius;
+      const minApexY = this.bounds.top + topMargin + safeFruitRadius;
+      const maxApexY = this.bounds.bottom - bottomMargin - safeFruitRadius;
       const cappedMinApexY = Math.min(minApexY, maxApexY);
       const cappedMaxApexY = Math.max(minApexY, maxApexY);
       const apexY = randomRange(cappedMinApexY, cappedMaxApexY);
@@ -2699,27 +2893,32 @@ class GameApp {
     return { vx, vy, gravity, scale };
   }
 
-  spawnFruit(x, y, launch) {
+  spawnFruit(x, y, launch, fruitSizing = this.computeFruitSizing(this.activeFruitCount())) {
     const spawnedAt = performance.now() / 1000;
     const fruit = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
-    const radius = 34 * launch.scale;
+    const radius = fruitSizing.radius;
+    const spawnX = this.findFruitSpawnX(radius, y);
     if (this.mode === MODES.AI_VS_HUMAN) {
       this.hasSpawnedOpeningFruit = true;
     }
-    this.objects.push({
+    const fruitObject = {
       id: nextObjectId++,
       kind: "fruit",
       name: fruit.name,
       color: fruit.color,
-      x: randomRange(radius, this.bounds.right - radius),
+      x: spawnX,
       y,
       vx: launch.vx,
       vy: launch.vy,
       gravity: launch.gravity,
       radius,
+      sliceRadius: fruitSizing.hitRadius,
+      sizeStage: fruitSizing.stage,
+      sizeRatio: fruitSizing.widthRatio,
       spawnedAt,
       pulse: randomRange(0, Math.PI * 2),
-    });
+    };
+    this.objects.push(fruitObject);
   }
 
   spawnBomb(x, y, launch) {
@@ -2832,9 +3031,8 @@ class GameApp {
           return;
         }
         if (
-          this.mode === MODES.AI_VS_HUMAN &&
           obj.kind === "fruit" &&
-          !this.aiController.isFullyVisible(obj, this.bounds)
+          !this.isFullyVisibleInBounds(obj)
         ) {
           return;
         }
@@ -2842,7 +3040,7 @@ class GameApp {
           segment.start,
           segment.end,
           { x: obj.x, y: obj.y },
-          obj.radius * 0.95,
+          this.objectSliceRadius(obj),
         );
         if (!collided) {
           return;
