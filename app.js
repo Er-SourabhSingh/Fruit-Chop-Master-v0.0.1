@@ -40,14 +40,14 @@ const GAME_CONFIG = {
 };
 
 const FRUIT_SIZING = {
-  defaultWidthRatio: 0.09,
-  minWidthRatio: 0.07,
+  defaultWidthRatio: 0.11,
+  minWidthRatio: 0.1,
   maxWidthRatio: 0.12,
-  earlyWidthRatioRange: [0.1, 0.12],
-  midWidthRatioRange: [0.09, 0.1],
-  hardWidthRatioRange: [0.07, 0.08],
+  earlyWidthRatioRange: [0.11, 0.12],
+  midWidthRatioRange: [0.105, 0.115],
+  hardWidthRatioRange: [0.1, 0.11],
   crowdedFruitThreshold: 10,
-  crowdedReductionRange: [0.1, 0.15],
+  crowdedReductionRange: [0.04, 0.08],
   crowdedRampFruits: 8,
   hitboxScale: 1.1,
   minTouchTargetPx: 44,
@@ -2866,20 +2866,26 @@ class GameApp {
 
     let riseDistance = height * randomRange(0.3, 1.08);
     let entrySpeedScale = 1;
-    if (this.mode === MODES.AI_VS_HUMAN) {
-      const safeFruitRadius =
-        Number.isFinite(fruitRadius) && fruitRadius > 0
-          ? fruitRadius
-          : width * FRUIT_SIZING.defaultWidthRatio;
-      const topMargin = Math.max(AI_FRUIT_FLIGHT.topSafeMargin, height * AI_FRUIT_FLIGHT.topSafeRatio);
-      const bottomMargin = Math.max(AI_FRUIT_FLIGHT.bottomSafeMargin, height * AI_FRUIT_FLIGHT.bottomSafeRatio);
+    const hasFruitRadius = Number.isFinite(fruitRadius) && fruitRadius > 0;
+    if (hasFruitRadius) {
+      const safeFruitRadius = fruitRadius;
+      const isAiMode = this.mode === MODES.AI_VS_HUMAN;
+      const topMargin = isAiMode
+        ? Math.max(AI_FRUIT_FLIGHT.topSafeMargin, height * AI_FRUIT_FLIGHT.topSafeRatio)
+        : Math.max(28, height * 0.045);
+      const bottomMargin = isAiMode
+        ? Math.max(AI_FRUIT_FLIGHT.bottomSafeMargin, height * AI_FRUIT_FLIGHT.bottomSafeRatio)
+        : Math.max(105, height * 0.16);
       const minApexY = this.bounds.top + topMargin + safeFruitRadius;
       const maxApexY = this.bounds.bottom - bottomMargin - safeFruitRadius;
       const cappedMinApexY = Math.min(minApexY, maxApexY);
       const cappedMaxApexY = Math.max(minApexY, maxApexY);
       const apexY = randomRange(cappedMinApexY, cappedMaxApexY);
-      riseDistance = Math.max(AI_FRUIT_FLIGHT.minRiseDistance, safeSpawnY - apexY);
-      entrySpeedScale = randomRange(...AI_FRUIT_FLIGHT.speedVarianceRange);
+      const minRiseDistance = isAiMode ? AI_FRUIT_FLIGHT.minRiseDistance : 84;
+      riseDistance = Math.max(minRiseDistance, safeSpawnY - apexY);
+      if (isAiMode) {
+        entrySpeedScale = randomRange(...AI_FRUIT_FLIGHT.speedVarianceRange);
+      }
     }
 
     const gravity = randomRange(820, 1120) * motionScale * difficultyScale * entrySpeedScale;
