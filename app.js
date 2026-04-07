@@ -136,6 +136,30 @@ const AI_TIME_SCALING = [
   { until: GAME_CONFIG.aiRoundSeconds, speedMultiplier: 1.5, spawnIntervalMultiplier: 0.68 },
 ];
 
+const AI_FRUIT_FLIGHT = {
+  speedVarianceRange: [0.88, 1.18],
+  topSafeMargin: 84,
+  topSafeRatio: 0.13,
+  bottomSafeMargin: 120,
+  bottomSafeRatio: 0.18,
+  minRiseDistance: 90,
+};
+
+const PENALTY_BUBBLE = {
+  kind: "penaltyBubble",
+  values: [10, 20, 50],
+  spawnChance: 0.08,
+  progressBonus: 0.06,
+  minProgress: 0.05,
+  minCooldownSeconds: 4.2,
+  maxCooldownSeconds: 7.4,
+  guaranteedFirstSpawnSecondsRange: [7, 11],
+  guaranteedRespawnGapSecondsRange: [10, 16],
+  lateSpawnGuardSeconds: 4.5,
+  radiusScale: 1.15,
+  splashColor: "#ff4f73",
+};
+
 const AI_ADAPTIVE_TRACKING = {
   windowSeconds: 6,
   cleanupSlackSeconds: 2,
@@ -877,12 +901,9 @@ class AIController {
       return null;
     }
 
-    const reactableObjects = objects.filter((obj) => {
-      const visibleForAi = this.pwaContinuousMode
-        ? this.isFullyVisible(obj, bounds)
-        : this.isSliceableVisible(obj, bounds);
-      return visibleForAi && this.reactionReady(obj, now);
-    });
+    const reactableObjects = objects.filter(
+      (obj) => this.isFullyVisible(obj, bounds) && this.reactionReady(obj, now),
+    );
 
     const regularFruits = reactableObjects.filter((obj) => obj.kind === "fruit");
     const hearts = reactableObjects.filter((obj) => obj.kind === "heart");
@@ -1247,7 +1268,7 @@ class AIController {
     });
 
     objects.forEach((obj) => {
-      if (!this.isSliceableVisible(obj, bounds)) {
+      if (!this.isFullyVisible(obj, bounds)) {
         this.visibleSince.delete(obj.id);
         this.reactionDelayByObject.delete(obj.id);
         return;
@@ -1639,9 +1660,14 @@ class GameApp {
     this.spawnInterval = GAME_CONFIG.baseSpawnInterval;
     this.speedMultiplier = 1;
     this.heartSpawnCooldown = randomRange(4.5, 7);
+    this.penaltyBubbleCooldown = 0;
+    this.nextPenaltyBubbleForceAt = randomRange(
+      ...PENALTY_BUBBLE.guaranteedFirstSpawnSecondsRange,
+    );
 
     this.humanComboText = "";
     this.humanComboTimer = 0;
+    this.penaltyPopups = [];
     this.humanCutCount = 0;
     this.humanComboCount = 0;
     this.humanHitStreak = 0;
@@ -2137,10 +2163,15 @@ class GameApp {
     this.spawnInterval = GAME_CONFIG.baseSpawnInterval;
     this.speedMultiplier = 1;
     this.heartSpawnCooldown = randomRange(4.5, 7);
+    this.penaltyBubbleCooldown = 0;
+    this.nextPenaltyBubbleForceAt = randomRange(
+      ...PENALTY_BUBBLE.guaranteedFirstSpawnSecondsRange,
+    );
 
     this.humanComboText = "";
     this.humanComboTimer = 0;
     this.blastTimer = 0;
+    this.penaltyPopups = [];
     this.resetHumanPerformanceTracking(now);
 
     this.objects = [];
@@ -2167,6 +2198,10 @@ class GameApp {
     this.hasSpawnedOpeningFruit = false;
     this.objects = [];
     this.particles = [];
+    this.penaltyPopups = [];
+    this.nextPenaltyBubbleForceAt = randomRange(
+      ...PENALTY_BUBBLE.guaranteedFirstSpawnSecondsRange,
+    );
     this.blade.reset();
     this.resetHumanPerformanceTracking();
     this.pendingEndReason = "";
@@ -2198,6 +2233,7 @@ class GameApp {
       this.bounds,
     );
     this.updateParticles(dt);
+    this.updatePenaltyPopups(dt);
     this.aiController.update(dt);
 
     if (this.humanComboTimer > 0) {
@@ -2299,13 +2335,10 @@ class GameApp {
         break;
       }
 
-      const strictAiVisibilityMode = isStandaloneDisplay() || this.isCoarsePointer;
       const hasVisibleFruit = this.objects.some(
         (obj) =>
           obj.kind === "fruit" &&
-          (strictAiVisibilityMode
-            ? this.aiController.isFullyVisible(obj, this.bounds)
-            : this.aiController.isSliceableVisible(obj, this.bounds)),
+          this.aiController.isFullyVisible(obj, this.bounds),
       );
       if (!hasVisibleFruit) {
         break;
@@ -2356,13 +2389,10 @@ class GameApp {
       return;
     }
 
-    const strictAiVisibilityMode = isStandaloneDisplay() || this.isCoarsePointer;
     const hasVisibleFruit = this.objects.some(
       (obj) =>
         obj.kind === "fruit" &&
-        (strictAiVisibilityMode
-          ? this.aiController.isFullyVisible(obj, this.bounds)
-          : this.aiController.isSliceableVisible(obj, this.bounds)),
+        this.aiController.isFullyVisible(obj, this.bounds),
     );
     if (!hasVisibleFruit) {
       return;
@@ -2436,22 +2466,52 @@ class GameApp {
 
   getAiTimePacing(elapsedSeconds) {
     const elapsed = clamp(elapsedSeconds, 0, GAME_CONFIG.aiRoundSeconds);
-    for (const stage of AI_TIME_SCALING) {
-      if (elapsed < stage.until) {
-        return stage;
+    if (!AI_TIME_SCALING.length) {
+      return { speedMultiplier: 1, spawnIntervalMultiplier: 1 };
+    }
+
+    const milestones = [
+      {
+        until: 0,
+        speedMultiplier: AI_TIME_SCALING[0].speedMultiplier,
+        spawnIntervalMultiplier: AI_TIME_SCALING[0].spawnIntervalMultiplier,
+      },
+      ...AI_TIME_SCALING,
+    ];
+
+    for (let index = 1; index < milestones.length; index += 1) {
+      const previous = milestones[index - 1];
+      const current = milestones[index];
+      if (elapsed <= current.until) {
+        const window = Math.max(0.001, current.until - previous.until);
+        const t = clamp((elapsed - previous.until) / window, 0, 1);
+        return {
+          speedMultiplier:
+            previous.speedMultiplier + (current.speedMultiplier - previous.speedMultiplier) * t,
+          spawnIntervalMultiplier:
+            previous.spawnIntervalMultiplier +
+            (current.spawnIntervalMultiplier - previous.spawnIntervalMultiplier) * t,
+        };
       }
     }
-    return AI_TIME_SCALING[AI_TIME_SCALING.length - 1];
+
+    const finalStage = AI_TIME_SCALING[AI_TIME_SCALING.length - 1];
+    return {
+      speedMultiplier: finalStage.speedMultiplier,
+      spawnIntervalMultiplier: finalStage.spawnIntervalMultiplier,
+    };
   }
 
   purgeAiModeNonFruitObjects() {
     if (this.mode !== MODES.AI_VS_HUMAN || !this.objects.length) {
       return;
     }
-    if (!this.objects.some((obj) => obj.kind !== "fruit")) {
+    if (!this.objects.some((obj) => obj.kind !== "fruit" && obj.kind !== PENALTY_BUBBLE.kind)) {
       return;
     }
-    this.objects = this.objects.filter((obj) => obj.kind === "fruit");
+    this.objects = this.objects.filter(
+      (obj) => obj.kind === "fruit" || obj.kind === PENALTY_BUBBLE.kind,
+    );
   }
 
   updateSpawning(dt) {
@@ -2459,6 +2519,7 @@ class GameApp {
       return;
     }
     this.heartSpawnCooldown = Math.max(0, this.heartSpawnCooldown - dt);
+    this.penaltyBubbleCooldown = Math.max(0, this.penaltyBubbleCooldown - dt);
     this.spawnCooldown -= dt;
     if (this.spawnCooldown > 0) {
       return;
@@ -2516,12 +2577,16 @@ class GameApp {
   spawnObject() {
     const baseX = this.bounds.right * 0.5;
     const baseY = this.bounds.bottom + Math.max(55, this.bounds.bottom * 0.1);
-    const launch = this.buildLaunchProfile();
+    const launch = this.buildLaunchProfile(baseY);
 
     if (this.mode === MODES.AI_VS_HUMAN) {
       this.purgeAiModeNonFruitObjects();
       if (!this.hasSpawnedOpeningFruit) {
         this.hasSpawnedOpeningFruit = true;
+      }
+      if (this.shouldSpawnPenaltyBubble()) {
+        this.spawnPenaltyBubble(baseX, baseY, launch);
+        return;
       }
       this.spawnFruit(baseX, baseY, launch);
       return;
@@ -2555,24 +2620,82 @@ class GameApp {
     return true;
   }
 
-  buildLaunchProfile() {
+  shouldSpawnPenaltyBubble() {
+    if (this.mode !== MODES.AI_VS_HUMAN) {
+      return false;
+    }
+    if (this.roundTimeRemaining <= PENALTY_BUBBLE.lateSpawnGuardSeconds) {
+      return false;
+    }
+    if (this.penaltyBubbleCooldown > 0) {
+      return false;
+    }
+    if (this.objects.some((obj) => obj.kind === PENALTY_BUBBLE.kind)) {
+      return false;
+    }
+    const elapsedAiSeconds = clamp(
+      GAME_CONFIG.aiRoundSeconds - this.roundTimeRemaining,
+      0,
+      GAME_CONFIG.aiRoundSeconds,
+    );
+    const guaranteedSpawnDue = elapsedAiSeconds >= this.nextPenaltyBubbleForceAt;
+    const progress = this.roundProgress();
+    if (!guaranteedSpawnDue && progress < PENALTY_BUBBLE.minProgress) {
+      return false;
+    }
+    if (!guaranteedSpawnDue) {
+      const spawnChance = clamp(
+        PENALTY_BUBBLE.spawnChance + progress * PENALTY_BUBBLE.progressBonus,
+        0.03,
+        0.24,
+      );
+      if (Math.random() >= spawnChance) {
+        return false;
+      }
+    }
+    this.penaltyBubbleCooldown = randomRange(
+      PENALTY_BUBBLE.minCooldownSeconds,
+      PENALTY_BUBBLE.maxCooldownSeconds,
+    );
+    this.nextPenaltyBubbleForceAt =
+      elapsedAiSeconds +
+      randomRange(...PENALTY_BUBBLE.guaranteedRespawnGapSecondsRange);
+    return true;
+  }
+
+  buildLaunchProfile(spawnY) {
     const height = this.bounds.bottom - this.bounds.top;
     const width = this.bounds.right - this.bounds.left;
     const motionScale = clamp(height / 720, 0.75, 1.7);
     const difficultyScale = 1 + (this.speedMultiplier - 1) * 0.9;
-    const riseRatio = randomRange(0.3, 1.08);
-    const riseDistance = height * riseRatio;
+    const sizeScale = clamp(Math.min(width / 1280, height / 720), 0.72, 1.35);
+    const scale = randomRange(0.78, 1.08) * sizeScale;
+    const safeSpawnY =
+      Number.isFinite(spawnY) && spawnY > this.bounds.bottom ? spawnY : this.bounds.bottom + Math.max(55, this.bounds.bottom * 0.1);
 
-    const gravity = randomRange(820, 1120) * motionScale * difficultyScale;
+    let riseDistance = height * randomRange(0.3, 1.08);
+    let entrySpeedScale = 1;
+    if (this.mode === MODES.AI_VS_HUMAN) {
+      const fruitRadius = 34 * scale;
+      const topMargin = Math.max(AI_FRUIT_FLIGHT.topSafeMargin, height * AI_FRUIT_FLIGHT.topSafeRatio);
+      const bottomMargin = Math.max(AI_FRUIT_FLIGHT.bottomSafeMargin, height * AI_FRUIT_FLIGHT.bottomSafeRatio);
+      const minApexY = this.bounds.top + topMargin + fruitRadius;
+      const maxApexY = this.bounds.bottom - bottomMargin - fruitRadius;
+      const cappedMinApexY = Math.min(minApexY, maxApexY);
+      const cappedMaxApexY = Math.max(minApexY, maxApexY);
+      const apexY = randomRange(cappedMinApexY, cappedMaxApexY);
+      riseDistance = Math.max(AI_FRUIT_FLIGHT.minRiseDistance, safeSpawnY - apexY);
+      entrySpeedScale = randomRange(...AI_FRUIT_FLIGHT.speedVarianceRange);
+    }
+
+    const gravity = randomRange(820, 1120) * motionScale * difficultyScale * entrySpeedScale;
     let vy = -Math.sqrt(Math.max(1, 2 * gravity * riseDistance));
     vy *= randomRange(0.97, 1.05);
 
     const horizontalRange = Math.max(85, width * 0.11) * motionScale;
     const horizontalBoost = 1 + (this.speedMultiplier - 1) * 0.35;
-    const vx = randomRange(-horizontalRange, horizontalRange) * horizontalBoost;
-
-    const sizeScale = clamp(Math.min(width / 1280, height / 720), 0.72, 1.35);
-    const scale = randomRange(0.78, 1.08) * sizeScale;
+    const lateralScale = this.mode === MODES.AI_VS_HUMAN ? Math.sqrt(entrySpeedScale) : 1;
+    const vx = randomRange(-horizontalRange, horizontalRange) * horizontalBoost * lateralScale;
     return { vx, vy, gravity, scale };
   }
 
@@ -2640,6 +2763,28 @@ class GameApp {
     });
   }
 
+  spawnPenaltyBubble(x, y, launch) {
+    if (this.mode !== MODES.AI_VS_HUMAN) {
+      return;
+    }
+    const spawnedAt = performance.now() / 1000;
+    const radius = 34 * launch.scale * PENALTY_BUBBLE.radiusScale;
+    this.objects.push({
+      id: nextObjectId++,
+      kind: PENALTY_BUBBLE.kind,
+      name: PENALTY_BUBBLE.kind,
+      color: "#a92957",
+      x: randomRange(radius, this.bounds.right - radius),
+      y,
+      vx: launch.vx,
+      vy: launch.vy,
+      gravity: launch.gravity,
+      radius,
+      spawnedAt,
+      pulse: randomRange(0, Math.PI * 2),
+    });
+  }
+
   updateObjects(dt) {
     this.objects.forEach((obj) => {
       obj.vy += obj.gravity * dt;
@@ -2686,6 +2831,13 @@ class GameApp {
         ) {
           return;
         }
+        if (
+          this.mode === MODES.AI_VS_HUMAN &&
+          obj.kind === "fruit" &&
+          !this.aiController.isFullyVisible(obj, this.bounds)
+        ) {
+          return;
+        }
         const collided = lineCircleCollision(
           segment.start,
           segment.end,
@@ -2720,6 +2872,11 @@ class GameApp {
     }
     this.lives = Math.min(GAME_CONFIG.maxLives, this.lives + 1);
     this.spawnJuiceSplash({ x: heart.x, y: heart.y }, heart.color);
+  }
+
+  randomPenaltyValue() {
+    const index = Math.floor(Math.random() * PENALTY_BUBBLE.values.length);
+    return PENALTY_BUBBLE.values[index];
   }
 
   buildAiSliceClaims(now, aiDecision) {
@@ -2813,6 +2970,15 @@ class GameApp {
           continue;
         }
 
+        if (obj.kind === PENALTY_BUBBLE.kind) {
+          const penalty = this.randomPenaltyValue();
+          this.humanScore = Math.max(0, this.humanScore - penalty);
+          this.spawnJuiceSplash({ x: obj.x, y: obj.y }, PENALTY_BUBBLE.splashColor);
+          this.spawnJuiceSplash({ x: obj.x, y: obj.y }, PENALTY_BUBBLE.splashColor);
+          this.spawnPenaltyPopup({ x: obj.x, y: obj.y }, `-${penalty}`);
+          continue;
+        }
+
         humanFruitHits += 1;
         this.spawnJuiceSplash({ x: obj.x, y: obj.y }, obj.color);
         continue;
@@ -2830,6 +2996,10 @@ class GameApp {
 
       if (obj.kind === "heart") {
         this.spawnJuiceSplash({ x: obj.x, y: obj.y }, "#ff80a4");
+        continue;
+      }
+
+      if (obj.kind === PENALTY_BUBBLE.kind) {
         continue;
       }
 
@@ -2984,6 +3154,7 @@ class GameApp {
     this.resultOverlay.classList.remove("hidden");
     this.hudEl.classList.add("hidden");
     this.objects = [];
+    this.penaltyPopups = [];
     this.blade.reset();
   }
 
@@ -3122,6 +3293,23 @@ class GameApp {
       .filter(Boolean);
   }
 
+  updatePenaltyPopups(dt) {
+    this.penaltyPopups = this.penaltyPopups
+      .map((popup) => {
+        const life = popup.life - dt;
+        if (life <= 0) {
+          return null;
+        }
+        return {
+          ...popup,
+          life,
+          y: popup.y + popup.vy * dt,
+          vy: popup.vy - 18 * dt,
+        };
+      })
+      .filter(Boolean);
+  }
+
   drawBackground() {
     const width = this.bounds.right;
     const height = this.bounds.bottom;
@@ -3148,6 +3336,8 @@ class GameApp {
           return;
         }
         this.drawBomb(obj);
+      } else if (obj.kind === PENALTY_BUBBLE.kind) {
+        this.drawPenaltyBubble(obj);
       } else {
         this.drawHeart(obj);
       }
@@ -3504,6 +3694,83 @@ class GameApp {
     this.ctx.fill();
   }
 
+  drawPenaltyBubble(bubble) {
+    this.ctx.save();
+    const r = bubble.radius;
+    const pulse = 0.5 + 0.5 * Math.sin(bubble.pulse * 2.1);
+    const ringAlpha = 0.3 + pulse * 0.25;
+    const glowRadius = r * (1.08 + pulse * 0.07);
+
+    const core = this.ctx.createRadialGradient(
+      bubble.x - r * 0.26,
+      bubble.y - r * 0.28,
+      r * 0.2,
+      bubble.x,
+      bubble.y,
+      r * 1.06,
+    );
+    core.addColorStop(0, "#ff9fbe");
+    core.addColorStop(0.55, "#e24a78");
+    core.addColorStop(1, "#8e224a");
+
+    this.ctx.fillStyle = `rgba(255, 88, 134, ${ringAlpha})`;
+    this.ctx.beginPath();
+    this.ctx.arc(bubble.x, bubble.y, glowRadius, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.fillStyle = core;
+    this.ctx.beginPath();
+    this.ctx.arc(bubble.x, bubble.y, r, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.strokeStyle = "rgba(255, 204, 220, 0.9)";
+    this.ctx.lineWidth = Math.max(2, r * 0.12);
+    this.ctx.beginPath();
+    this.ctx.arc(bubble.x, bubble.y, r * 0.88, 0, Math.PI * 2);
+    this.ctx.stroke();
+
+    this.ctx.fillStyle = "rgba(255, 232, 240, 0.96)";
+    this.ctx.beginPath();
+    this.ctx.arc(bubble.x - r * 0.26, bubble.y - r * 0.3, r * 0.18, 0, Math.PI * 2);
+    this.ctx.fill();
+
+    this.ctx.strokeStyle = "#fff5f9";
+    this.ctx.lineWidth = Math.max(3, r * 0.18);
+    this.ctx.lineCap = "round";
+    this.ctx.beginPath();
+    this.ctx.moveTo(bubble.x - r * 0.38, bubble.y);
+    this.ctx.lineTo(bubble.x + r * 0.38, bubble.y);
+    this.ctx.stroke();
+    this.ctx.restore();
+  }
+
+  spawnPenaltyPopup(position, text) {
+    this.penaltyPopups.push({
+      text,
+      x: position.x,
+      y: position.y - 8,
+      vy: randomRange(-132, -98),
+      life: 0.85,
+      maxLife: 0.85,
+    });
+  }
+
+  drawPenaltyPopups() {
+    this.ctx.save();
+    this.penaltyPopups.forEach((popup) => {
+      const alpha = clamp(popup.life / popup.maxLife, 0, 1);
+      this.ctx.font = "800 28px 'Segoe UI', sans-serif";
+      this.ctx.textAlign = "center";
+      this.ctx.textBaseline = "middle";
+      this.ctx.strokeStyle = `rgba(74, 10, 29, ${alpha * 0.95})`;
+      this.ctx.lineWidth = 4;
+      this.ctx.strokeText(popup.text, popup.x, popup.y);
+      this.ctx.fillStyle = `rgba(255, 106, 146, ${alpha})`;
+      this.ctx.fillText(popup.text, popup.x, popup.y);
+    });
+    this.ctx.restore();
+  }
+
   drawParticles() {
     this.particles.forEach((particle) => {
       const alpha = clamp(particle.life / particle.maxLife, 0, 1);
@@ -3601,6 +3868,7 @@ class GameApp {
       this.aiController.draw(this.ctx, this.bounds);
     }
     this.blade.draw(this.ctx, this.bounds);
+    this.drawPenaltyPopups();
 
     if (this.state === "bomb_blast") {
       this.drawBombBlast();
